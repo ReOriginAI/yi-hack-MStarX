@@ -2,20 +2,8 @@
 /build/*
 !/build/.gitkeep
 
-/stock_firmware/y203c/*
-!/stock_firmware/y203c/.gitkeep
-/stock_firmware/h201c/*
-!/stock_firmware/h201c/.gitkeep
-/stock_firmware/h305r/*
-!/stock_firmware/h305r/.gitkeep
-/stock_firmware/y25/*
-!/stock_firmware/y25/.gitkeep
 /stock_firmware/y23/*
 !/stock_firmware/y23/.gitkeep
-/stock_firmware/y30/*
-!/stock_firmware/y30/.gitkeep
-/stock_firmware/h307/*
-!/stock_firmware/h307/.gitkeep
 
 /sysroot/*
 !/sysroot/.gitkeep
