@@ -1,0 +1,45 @@
+--- tinyalsa-1.0.0/src/pcm.c
++++ tinyalsa-1.0.0/src/pcm.c
+@@ -1,7 +1,7 @@
+ int pcm_create_snoop_fifo_in(struct pcm *pcm)
+ {
+     char *fifo_in = "/tmp/audio_in_fifo";
+-    pthread_t open_in_thread, read_thread;
++    pthread_t read_thread;
+ 
+     if (mkfifo(fifo_in, 0666) < 0) {
+         if (errno != EEXIST) {
+@@ -10,24 +10,20 @@
+         }
+     }
+ 
+-    if(pthread_create(&open_in_thread, NULL, fifo_open_w_thread, fifo_in)) {
+-        oops(pcm, errno, "Error creating thread\n");
+-        return -1;
+-    }
+-
+-    snoop_fd_in = open(fifo_in, O_RDONLY);
++    /*
++     * Keep a writer endpoint open in-process so the blocking read in
++     * fifo_read_thread does not see EOF whenever no external speaker client
++     * is connected.  The previous O_RDONLY + temporary writer arrangement
++     * caused read() to return 0 and wake every 10 ms for the lifetime of rmm.
++     * O_RDWR preserves the FIFO interface for external writers while letting
++     * the idle reader sleep in the kernel until audio actually arrives.
++     */
++    snoop_fd_in = open(fifo_in, O_RDWR);
+     if (snoop_fd_in <= 0) {
+         oops(pcm, errno, "cannot open snoop fifo");
+         return -1;
+     }
+ 
+-    if(pthread_join(open_in_thread, NULL)) {
+-        oops(pcm, errno, "Failed to join unblocking thread");
+-        close(snoop_fd_in);
+-        snoop_fd_in = 0;
+-        return -1;
+-    }
+-
+     if(pthread_create(&read_thread, NULL, fifo_read_thread, (void *) pcm)) {
+         oops(pcm, errno, "Error creating thread\n");
+         return -1;

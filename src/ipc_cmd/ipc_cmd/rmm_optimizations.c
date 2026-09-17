@@ -6,15 +6,44 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 static int (*original_pthread_create)(pthread_t *, const pthread_attr_t *,
                                       void *(*)(void *), void *);
+
+struct mapped_thread_start {
+    void *(*start_routine)(void *);
+    void *arg;
+};
 
 static bool environment_enabled(const char *name) {
     const char *value = getenv(name);
 
     return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0 &&
            strcmp(value, "no") != 0;
+}
+
+static void append_thread_map(long tid, void *(*start_routine)(void *)) {
+    FILE *debug_file = fopen("/tmp/rmm_optimizations.log", "a");
+
+    if (debug_file != NULL) {
+        fprintf(debug_file, "thread_start tid=%ld start=%p\n", tid,
+                start_routine);
+        fclose(debug_file);
+    }
+}
+
+static void *mapped_thread_trampoline(void *opaque) {
+    struct mapped_thread_start *mapped = opaque;
+    void *(*start_routine)(void *) = mapped->start_routine;
+    void *arg = mapped->arg;
+    long tid = syscall(SYS_gettid);
+
+    free(mapped);
+    append_thread_map(tid, start_routine);
+
+    return start_routine(arg);
 }
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
@@ -50,6 +79,17 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                         dlerror());
             }
             return EAGAIN;
+        }
+    }
+
+    if (environment_enabled(ENV_RMM_OPTIMIZATIONS_THREAD_MAP)) {
+        struct mapped_thread_start *mapped = malloc(sizeof(*mapped));
+
+        if (mapped != NULL) {
+            mapped->start_routine = start_routine;
+            mapped->arg = arg;
+            return original_pthread_create(thread, attr,
+                                           mapped_thread_trampoline, mapped);
         }
     }
 

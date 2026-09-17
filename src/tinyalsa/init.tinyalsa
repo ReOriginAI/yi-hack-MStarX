@@ -13,5 +13,6 @@ fi
 tar zxvf $ARCHIVE
 
 patch -p0 < Yihack_tinyalsa.patch
+patch -p0 < Yihack_tinyalsa_idle_speaker.patch
 
 cd tinyalsa-1.0.0 || exit 1
