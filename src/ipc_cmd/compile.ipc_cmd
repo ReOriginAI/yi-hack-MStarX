@@ -32,6 +32,7 @@ cp ./ipc_read ../_install/bin || exit 1
 cp ./ipc_notify ../_install/bin || exit 1
 cp ./ipc2file ../_install/bin || exit 1
 cp ./ipc_multiplex.so ../_install/lib || exit 1
+cp ./rmm_optimizations.so ../_install/lib || exit 1
 
 ${STRIP} ../_install/bin/* || exit 1
 ${STRIP} ../_install/lib/* || exit 1

@@ -15,19 +15,54 @@ get_config()
     grep -w $1 $YI_HACK_PREFIX/$CONF_FILE | cut -d "=" -f2-
 }
 
+set_camera_time()
+{
+    # MID4 -> MID1, opcode/sub-opcode 0x71, followed by a little-endian
+    # 32-bit Unix epoch.  The old ipc_cmd -x payload was fixed at April 2020.
+    EPOCH=$(date +%s)
+    case "$EPOCH" in
+        ''|*[!0-9]*)
+            log "Unable to construct camera time IPC message: invalid epoch"
+            return 1
+            ;;
+    esac
+
+    B0=$((EPOCH % 256))
+    B1=$(((EPOCH / 256) % 256))
+    B2=$(((EPOCH / 65536) % 256))
+    B3=$(((EPOCH / 16777216) % 256))
+    TIME_PACKET=/tmp/ipc_set_time.$$
+
+    printf '\001\000\000\000\004\000\000\000\161\000\161\000\000\000\000\000' > "$TIME_PACKET"
+    printf "\\$(printf '%03o' "$B0")\\$(printf '%03o' "$B1")\\$(printf '%03o' "$B2")\\$(printf '%03o' "$B3")" >> "$TIME_PACKET"
+    ipc_cmd -f "$TIME_PACKET"
+    RESULT=$?
+    rm -f "$TIME_PACKET"
+    return $RESULT
+}
+
+wait_for_frame_buffer()
+{
+    BUFFER_STAGE=$1
+    BUFFER_POLLS=$2
+    BUFFER_N=0
+    BUFFER_IDX=`hexdump -n 16 /dev/fshare_frame_buf | awk 'NR==1{print $8}'`
+    while [ "$BUFFER_IDX" = "0000" ] && [ $BUFFER_N -lt $BUFFER_POLLS ]; do
+        sleep 0.2
+        BUFFER_IDX=`hexdump -n 16 /dev/fshare_frame_buf | awk 'NR==1{print $8}'`
+        BUFFER_N=$(($BUFFER_N+1))
+    done
+    printf '%s stage=%s buffer_index=%s polls=%s\n' "$(date +%s)" "$BUFFER_STAGE" "$BUFFER_IDX" "$BUFFER_N" >> /tmp/cloud_bootstrap_state.log
+    [ "$BUFFER_IDX" != "0000" ]
+}
+
 start_buffer()
 {
-    # Trick to start circular buffer filling
-    ./cloud &
-    IDX=`hexdump -n 16 /dev/fshare_frame_buf | awk 'NR==1{print $8}'`
-    N=0
-    while [ "$IDX" -eq "0000" ] && [ $N -lt 60 ]; do
-        IDX=`hexdump -n 16 /dev/fshare_frame_buf | awk 'NR==1{print $8}'`
-        N=$(($N+1))
-        sleep 0.2
-    done
-    killall cloud
-    ipc_cmd -x
+    # A current 0x71 time-ready message is the only local bootstrap action that
+    # the disabled-cloud path needs.  No vendor cloud executable is launched.
+    rm -f /tmp/cloud_bootstrap_state.log
+    set_camera_time
+    wait_for_frame_buffer time_0x71 60
 }
 
 log()
@@ -144,6 +179,27 @@ case $(get_config HTTPD_PORT) in
     *) HTTPD_PORT=$(get_config HTTPD_PORT) ;;
 esac
 
+start_rmm() {
+    RMM_LIBRARY_PATH="/home/yi-hack/lib:/lib:/home/lib:/home/ms:/home/app/locallib"
+    RMM_OPTIMIZATIONS="/home/yi-hack/lib/rmm_optimizations.so"
+    RMM_Y23_MD5="598c74819e607648abb0c3402fda957f"
+
+    if [[ $(get_config DISABLE_MOTION_ANALYSIS) == "yes" ]] ; then
+        RMM_MD5=$(md5sum /home/app/rmm 2>/dev/null | awk '{print $1}')
+        if [[ "$RMM_MD5" == "$RMM_Y23_MD5" ]] && [ -f "$RMM_OPTIMIZATIONS" ] ; then
+            log "Starting rmm without motion analysis" 1
+            RMM_DISABLE_MOTION_ANALYSIS=1 \
+            LD_PRELOAD="$RMM_OPTIMIZATIONS" \
+            LD_LIBRARY_PATH="$RMM_LIBRARY_PATH" \
+            ./rmm &
+            return
+        fi
+        log "Motion-analysis optimization skipped: unsupported rmm or missing preload" 1
+    fi
+
+    LD_LIBRARY_PATH="$RMM_LIBRARY_PATH" ./rmm &
+}
+
 log "Starting yi processes" 1
 if [[ $(get_config DISABLE_CLOUD) == "no" ]] ; then
     (
@@ -162,7 +218,7 @@ if [[ $(get_config DISABLE_CLOUD) == "no" ]] ; then
             # Enable time osd
             set_tz_offset -c osd -o on
         fi
-        LD_LIBRARY_PATH="/home/yi-hack/lib:/lib:/home/lib:/home/ms:/home/app/locallib" ./rmm &
+        start_rmm
         sleep 4
         dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
         if [[ $(get_config TIME_OSD) == "yes" ]] ; then
@@ -202,16 +258,19 @@ else
         fi
         cd /home/app
         killall dispatch
-        LD_PRELOAD=/home/yi-hack/lib/ipc_multiplex.so ./dispatch &
+        IPC_MULTIPLEX_QUEUES=2 \
+        IPC_MULTIPLEX_DROP_CLOUD_EVENTS=1 \
+        LD_PRELOAD=/home/yi-hack/lib/ipc_multiplex.so \
+        ./dispatch &
         sleep 3
         if [ $(get_config TIME_OSD) == "yes" ]; then
             # Enable time osd
             set_tz_offset -c osd -o on
         fi
-        LD_LIBRARY_PATH="/home/yi-hack/lib:/lib:/home/lib:/home/ms:/home/app/locallib" ./rmm &
+        start_rmm
         sleep 4
         dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
-        # Trick to start circular buffer filling
+        # Signal time readiness and start circular-buffer filling
         start_buffer
         if [[ $(get_config REC_WITHOUT_CLOUD) == "yes" ]] ; then
             if [[ $(get_config TIME_OSD) == "yes" ]] ; then
@@ -220,7 +279,6 @@ else
                 ./mp4record &
             fi
         fi
-        ./cloud &
     )
 fi
 
@@ -255,9 +313,9 @@ if [[ $(get_config NTPD) == "yes" ]] ; then
     sleep 5 && ntpd -p $(get_config NTP_SERVER) &
 fi
 
-log "Starting mqtt services"
-$START_STOP_SCRIPT mqtt start
 if [[ $(get_config MQTT) == "yes" ]] ; then
+    log "Starting mqtt services"
+    $START_STOP_SCRIPT mqtt start
     $START_STOP_SCRIPT mqtt-config start
     $YI_HACK_PREFIX/script/conf2mqtt.sh &
 fi

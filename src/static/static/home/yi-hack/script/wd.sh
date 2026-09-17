@@ -216,6 +216,16 @@ check_rmm()
 check_mqtt()
 {
 #  echo "$(date +'%Y-%m-%d %H:%M:%S') - Checking mqttv4 process..." >> $LOG_FILE
+    if [[ $(get_config MQTT) != "yes" ]] ; then
+        if ps ww | grep -q '[m]qttv4'; then
+            $START_STOP_SCRIPT mqtt stop >/dev/null 2>&1
+        fi
+        if ps ww | grep -q '[m]qtt-config'; then
+            $START_STOP_SCRIPT mqtt-config stop >/dev/null 2>&1
+        fi
+        return
+    fi
+
     PS=`ps ww | grep mqttv4 | grep -v grep | grep -c ^`
 
     if [ $PS -eq 0 ]; then

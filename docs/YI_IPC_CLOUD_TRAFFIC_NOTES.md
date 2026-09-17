@@ -137,12 +137,24 @@ Known cloud API commands:
 | Command | Yi name | Observed role |
 |---:|---|---|
 | `136` | `CMD_do_syntime` | Time synchronization |
+| `137` | bind | Device binding |
 | `138` | `CMD_do_login_v4` | Device/cloud login |
+| `139` | reset | Cloud/device reset path |
+| `140` | upgrade | Firmware upgrade path |
 | `141` | `CMD_do_tnp_on_line` | TNP/P2P online registration |
 | `142` | `CMD_do_get_dev_info` | Device information/capabilities |
+| `143` | region | Region lookup/configuration |
+| `301` | firmware MD5 | Firmware integrity metadata |
 | `304` | `CMD_do_update_event_v4` | Event registration/update |
 | `306` | `CMD_do_gen_presigned_url_v5` | Request JPG/MP4 upload destination/credentials |
+| `311` | check DID | Device-ID check |
 | `411` | `CMD_do_event_upload` | Event-upload transaction/finalization |
+| `412` | information report | Device/status reporting |
+| `413` | log upload | Diagnostic-log upload |
+| `414` | data upload | Generic data upload |
+| `415` | upload | Additional upload path |
+
+Commands beyond the seven named `CMD_*` entries above were recovered from command construction and strings in the proprietary `cloud` binary. Their broad roles are statically identified, but their exact request/response contracts still require live observation. The current fake handles only `136`, `138`, `141`, `142`, `304`, `306`, and `411` explicitly.
 
 This naturally divides the Yi cloud interaction into two groups.
 
@@ -163,7 +175,7 @@ This naturally divides the Yi cloud interaction into two groups.
 411  event upload transaction
 ```
 
-The event/upload plane is likely one of the cleanest future ablation boundaries.
+The event/upload plane is likely one of the cleanest future ablation boundaries. However, `cloudAPI` is not the only possible network edge: the `cloud` binary also contains a direct MiIO socket path for `ot.io.mi.com` / `ott.io.mi.com`.
 
 ## Probable Yi event upload flow
 
@@ -324,31 +336,19 @@ This is strong evidence that the standalone `p2p_tnp` and `oss*` processes are n
 
 `watch_process` is also absent, though that is a supervision decision rather than a protocol dependency.
 
-## `cloud` is not purely a cloud client
+## The former local `cloud` dependency is removed
 
-The `cloud` binary has at least one local side effect that yi-hack-MStar relies on.
+The proprietary `cloud` binary mixed remote behavior with one required local state transition. Instrumented startup captured CloudAPI operations `136`, `138`, and `142`, followed by cloud-to-RMM messages `0x71`, `0x92`, `0x8c`, and `0x94`.
 
-Local-only startup briefly runs:
+Staged cold boots then isolated the dependency:
 
-```sh
-./cloud &
-```
+1. without cloud-origin IPC, `/dev/fshare_frame_buf` remained at index zero;
+2. a dynamically generated `0x71` current-epoch message made the buffer advance immediately;
+3. `0x92`, `0x8c`, and `0x94` were not required for local media startup.
 
-and waits for `/dev/fshare_frame_buf` to begin filling. It then kills `cloud` and sends an IPC message with `ipc_cmd -x`.
+The disabled-cloud path now generates `0x71` directly and launches neither transient nor resident `cloud`. This preserves the required local state transition without retaining Yi login, reporting, upload workers, MiIO code, or CloudAPI subprocesses.
 
-Afterward, local-only mode starts `cloud` again.
-
-Therefore the current classification is:
-
-```text
-cloud = mixed local + cloud responsibilities
-```
-
-It is **not** yet safe to remove `cloud` wholesale.
-
-The existing `cloudAPI_fake` approach already demonstrates a useful design pattern: retain proprietary local side effects while replacing external cloud transactions with local synthetic responses.
-
-## Unknown `0x71` message
+## Resolved `0x71` message: set system/RTC time
 
 `ipc_cmd -x` sends this packet:
 
@@ -366,17 +366,26 @@ with four trailing bytes:
 a1 0e 9a 5e
 ```
 
-It is sent immediately after `cloud` has been used to start the shared frame buffer and then killed.
+The payload is the little-endian Unix epoch `1587154593`, or `2020-04-17 20:16:33 UTC`.
 
-Its meaning is currently unknown.
+Static analysis traces the same packet through `cloud` and `dispatch`:
 
-Classification:
+1. `cloud::yi_sync_time` runs CloudAPI command `136` and parses the returned epoch;
+2. `cloud_set_time` sends `MID4 -> MID1`, opcode/sub-opcode `0x71`, with that four-byte epoch;
+3. the dispatch handler formats and executes `/home/base/tools/rtctool -s time ...`;
+4. dispatch logs `DISPATCH_SET_TIME` and sets the time-ready fields in `/tmp/mmap.info`.
+
+The 2026-09-17 local-only reboot showed this exact sequence:
 
 ```text
-MID4 -> MID1 opcode 0x71 = preserve until understood
+transient cloud command 136 -> correct 2026 time
+ipc_cmd -x                -> stale 2020 time
+resident cloud command 136 -> correct 2026 time
 ```
 
-This packet may be a cloud/P2P/local-buffer handshake and should not be ablated prematurely.
+The old resident `cloud` was repairing the static replay. `system.sh` now constructs the packet with `date +%s`, writes the epoch in little-endian form, sends it through `ipc_cmd -f`, and waits for the frame index to advance. CloudAPI command `136` no longer launches its own one-shot `ntpd`; the configured NTP service has sole ownership of network time synchronization.
+
+This implementation passed repeated cold reboots, advancing frame-buffer checks, and high/low RTSP `DESCRIBE`/`SETUP`/`PLAY` with live RTP. A WAN-disconnected cold boot is still required to validate RTC/time behavior when configured NTP cannot reach its server.
 
 ## `dispatch` should not currently be treated as cloud-only
 
@@ -409,9 +418,9 @@ keep dispatch
 
 rather than simply deleting `dispatch`.
 
-## IPC multiplex observation overhead
+## IPC multiplex routing and cloud-event filter
 
-`dispatch` is currently started with:
+Historically, `dispatch` was started with an unconfigured preload:
 
 ```text
 LD_PRELOAD=/home/yi-hack/lib/ipc_multiplex.so
@@ -445,6 +454,33 @@ Every received IPC message can also result in nine `mq_send()` attempts. Unused 
 
 This multiplex layer is useful for analysis, but it is itself a possible RAM/CPU optimization target later. It is not a Yi cloud protocol requirement.
 
+Live descriptor inspection before strict MQTT gating found:
+
+```text
+/ipc_dispatch_1 -> mqttv4
+/ipc_dispatch_2 -> ipc2file
+/ipc_dispatch_3 through _9 -> no live consumer
+```
+
+After startup and watchdog logic were corrected to honor `MQTT=no`, `mqttv4` remained absent and `_1` also had no consumer. Disabled-cloud startup now uses:
+
+```text
+IPC_MULTIPLEX_QUEUES=2
+IPC_MULTIPLEX_DROP_CLOUD_EVENTS=1
+LD_PRELOAD=/home/yi-hack/lib/ipc_multiplex.so
+```
+
+Only `/ipc_dispatch_2` is opened. Unset/`all` queue configuration retains the former nine-queue diagnostic mode. This removes eight unused queue objects and eight nonblocking sends per dispatch message; the nominal payload-capacity reduction is 256 KiB, not a claim of exactly 256 KiB resident recovery.
+
+The event filter consumes only exact `MID2 -> MID4` packets whose main/sub opcode matches one of:
+
+```text
+0x7006 body/person   0x7007 vehicle   0x7008 animal
+0x7009 motion        0x6002 baby cry  0x6004 abnormal sound
+```
+
+A synthetic classifier test and a real-dispatch test dropped all six packets while preserving adjacent `MID2 -> MID1 0x00ed` local detection traffic. Repeated cold boots retained frame-buffer startup, recorder initialization, and both video streams. `rmm` CPU remained about 35.9%, confirming that this is vendor-route cleanup rather than an upstream analysis optimization.
+
 ## Current ablation confidence map
 
 ### Strong cloud/remote-only candidates
@@ -460,7 +496,9 @@ CloudAPI 141 remote TNP registration
 Wi-Fi/P2P/device telemetry collection for Yi cloud
 ```
 
-### Strong candidates, but verify live first
+These paths remain removal targets even if an idle sample attributes little CPU or RAM to them. Eliminating vendor-only telemetry, destinations, retries, credentials, and dormant remote-control surfaces is an explicit local-only firmware requirement, separate from performance optimization.
+
+### Implemented cloud-event filter
 
 ```text
 RMM -> MID4 0x7006 body/person events
@@ -479,22 +517,19 @@ rmm
 source 8 -> RMM local control messages
 source 8 -> MID1 local control messages
 RMM -> MID1 motion/event messages
-cloud local initialization behavior
-MID4 -> MID1 opcode 0x71
+generated MID4 -> MID1 opcode 0x71 with the current epoch
 MID_RCD (0x10) paths until mapped
 ```
 
 ## Next observational work on live y23
 
-Before any binary patching, collect:
+The active process baseline, process memory, idle CPU, shared mappings, idle sockets, `0x71` semantics, complete cloud bootstrap, and current mirror-queue consumers have now been collected. Remaining work before proprietary `rmm` patching is:
 
-1. Active Yi process list and RSS/CPU.
-2. Outbound sockets by process (`cloud`, `p2p_tnp`, `oss*`, `rmm`, `dispatch`).
-3. DNS requests and remote destinations.
-4. IPC message frequency grouped by `(srcMid, dstMid, mainOp, subOp)`.
-5. Traffic changes during idle, motion, sound, app/P2P connection, and SD recording.
-6. Any traffic involving `MID_RCD=0x10`.
-7. Whether the Wi-Fi PSK ever appears in process arguments, plaintext buffers visible through ordinary diagnostics, or network payloads.
-8. Exact dependency of the `0x71` message and `cloud` frame-buffer bootstrap.
+1. Validate an Internet-disconnected cold boot.
+2. Observe DNS and outbound connections during boot, motion, sound, and SD recording.
+3. Group IPC frequency by `(srcMid, dstMid, mainOp, subOp)`, including `MID_RCD=0x10`.
+4. Determine which analysis/allocation branches can be removed while retaining any selected local motion/event behavior.
+5. Close the Wi-Fi-PSK question with traffic observation.
+6. Complete RTSP audio, snapshot, PTZ, ONVIF, speaker/backchannel, recording, and long-run validation.
 
-Only after that mapping should `rmm`, `dispatch`, or their message paths be patched.
+The optional, hash-gated no-motion preload is already validated for RTSP/ONVIF-only use. Further `rmm` changes still require this mapping and matched A/B validation.

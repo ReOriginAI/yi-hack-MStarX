@@ -144,6 +144,8 @@ void print_usage(char *progname)
     fprintf(stderr, "\t\tstop a motion detection event\n");
     fprintf(stderr, "\t-w, --save_config\n");
     fprintf(stderr, "\t\tsave config\n");
+    fprintf(stderr, "\t-x, --set-time\n");
+    fprintf(stderr, "\t\tsend the current epoch/time-ready message\n");
     fprintf(stderr, "\t-d, --debug\n");
     fprintf(stderr, "\t\tenable debug\n");
     fprintf(stderr, "\t-h, --help\n");
@@ -194,7 +196,8 @@ int main(int argc, char ** argv)
     unsigned char msg_file[1024];
     FILE *fIn;
     int nread = 0;
-    int xxx_0 = 0;
+    int set_time = 0;
+    unsigned char time_msg[20];
 
     file[0] = '\0';
 
@@ -233,7 +236,7 @@ int main(int argc, char ** argv)
             {"start", required_argument, 0, 'S'},
             {"stop", no_argument, 0, 'T'},
             {"save_config", no_argument, 0, 'w'},
-            {"xxx", no_argument, 0, 'x'},
+            {"set-time", no_argument, 0, 'x'},
             {"debug",  no_argument, 0, 'd'},
             {"help",  no_argument, 0, 'h'},
             {0, 0, 0, 0}
@@ -622,7 +625,7 @@ int main(int argc, char ** argv)
             break;
 
         case 'x':
-            xxx_0 = 1;
+            set_time = 1;
             break;
 
         case 'h':
@@ -1038,8 +1041,23 @@ int main(int argc, char ** argv)
         return 0;
     }
 
-    if (xxx_0 == 1) {
-        mq_send(ipc_mq, IPC_XXX_0, sizeof(IPC_XXX_0) - 1, 0);
+    if (set_time == 1) {
+        time_t now = time(NULL);
+        unsigned long epoch;
+
+        if (now < 0) {
+            fprintf(stderr, "Error reading current time\n");
+            ipc_stop();
+            return -1;
+        }
+
+        epoch = (unsigned long) now;
+        memcpy(time_msg, IPC_SET_TIME_HEADER, sizeof(IPC_SET_TIME_HEADER) - 1);
+        time_msg[16] = epoch & 0xff;
+        time_msg[17] = (epoch >> 8) & 0xff;
+        time_msg[18] = (epoch >> 16) & 0xff;
+        time_msg[19] = (epoch >> 24) & 0xff;
+        mq_send(ipc_mq, time_msg, sizeof(time_msg), 0);
     }
 
     ipc_stop();

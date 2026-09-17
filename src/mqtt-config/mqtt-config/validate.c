@@ -9,6 +9,7 @@ char *config_params[PARAM_NUM][PARAM_OPTIONS] = {
     { "system", "MDNSD", "bool", "", "", "" , "", "", "" },
     { "system", "DISABLE_CLOUD", "bool", "", "", "" , "", "", "" },
     { "system", "REC_WITHOUT_CLOUD", "bool", "", "", "" , "", "", "" },
+    { "system", "DISABLE_MOTION_ANALYSIS", "bool", "", "", "" , "", "", "" },
     { "system", "MQTT", "bool", "", "", "" , "", "", "" },
     { "system", "RTSP", "bool", "", "", "" , "", "", "" },
     { "system", "RTSP_ALT", "enum", "standard", "alternative", "go2rtc" , "", "", "" },

@@ -95,11 +95,15 @@ For Y23, prefer these rules:
 - **Make restartable services expendable before touching essential media/control processes.**
 - **Every vendor-binary patch must be model/firmware gated and reversible.**
 - **A disabled feature must result in no hidden worker remaining alive.**
+- **Treat removal of vendor-only network code, telemetry, retries, and message routes as a goal even when the measured CPU/RAM saving is small.**
+- **A local-only build should not merely block Yi/Xiaomi calls; it should avoid launching their producers and should not accumulate messages for absent consumers.**
 - **Do not copy Allwinner binary offsets, VE patches, or queue assumptions onto MStar.**
 
 ## Phase 0 — Baseline and dependency map
 
 Before changing boot behavior, build a repeatable Y23 baseline.
+
+Status on 2026-09-17: the cloud-enabled and `DISABLE_CLOUD=yes` idle baselines are recorded in `CLOUD_PATH_FINDINGS.md`. The validated local-only boot removes `cloud`, `p2p_tnp`, `oss`, `watch_process`, and disabled MQTT workers; generates the sole required `0x71` state transition locally; filters confirmed cloud-directed event packets; and retains high/low RTSP and snapshots. Dispatch now mirrors only to the active `_2` consumer. `MemAvailable` improved by roughly 2.0–2.2 MiB from process ablation, before the optional motion-analysis saving. The full functional and offline-boot matrix is not complete.
 
 ### Observe these vendor processes
 
@@ -123,25 +127,53 @@ For each process record:
 
 ### Required dependency questions
 
-Prove, rather than assume:
+Resolved or partially resolved:
 
-- which `cloud` operation starts or enables `/dev/fshare_frame_buf`
-- which `cloudAPI` commands are required for local media versus telemetry/cloud state
-- which dispatch MIDs have real consumers on Y23
-- what the observed `MID4 -> MID1 opcode 0x71` path does
-- whether `p2p_tnp` has any local-media side effects beyond remote P2P
-- whether each `oss*` process is purely an upload path
+- `MID4 -> MID1 opcode 0x71` sets the system/RTC time from a four-byte Unix epoch;
+- the former `ipc_cmd -x` packet contained a stale April 2020 epoch; `system.sh` now generates the same message with the current epoch;
+- an instrumented boot captured transient `cloud` operations `136`, `138`, and `142`, followed by IPC `0x71`, `0x92`, `0x8c`, and `0x94`;
+- staged cold boots proved that `0x71` alone activates `/dev/fshare_frame_buf`; neither transient nor resident `cloud` is now launched with `DISABLE_CLOUD=yes`;
+- CloudAPI fake command `136` no longer launches a duplicate one-shot NTP client; configured time synchronization is owned by `system.sh`;
+- before MQTT gating, mirror-queue consumers were `_1` (`mqttv4`) and `_2` (`ipc2file`); with `MQTT=no` now enforced, only `_2` has a live consumer;
+- disabled-cloud dispatch now opens only `/ipc_dispatch_2`; a diagnostic/full-fanout mode remains available when `IPC_MULTIPLEX_QUEUES` is unset or `all`;
+- exact `rmm -> MID4` event packets `0x7006`-`0x7009`, `0x6002`, and `0x6004` are consumed before proprietary dispatch routing, while module-1 local event traffic is retained;
+- the unnamed high-CPU `rmm` thread is `motion_proc`; a hash-gated, opt-in preload can omit it when motion events and motion-triggered recording are not wanted;
+- `p2p_tnp`, `oss`, and `watch_process` are not needed to bring up the observed local high/low RTSP paths;
+- only `oss` exists on the observed Y23; `oss_fast` and `oss_lapse` were absent.
+
+Still prove, rather than assume:
+
+- correct RTC/time behavior during an Internet-disconnected cold boot
+- whether optional features consume dispatch mirror queues `_3` through `_9`
+- whether `p2p_tnp` has any local-media side effects beyond the paths already tested
+- whether `oss` is purely an upload path across event and recording workloads
 - which `mp4record` dependencies are SD-recording-only versus cloud-event-only
+- which `rmm -> MID4` messages and upstream computations can be removed while preserving selected local event features
 
-Deliverable: `docs/y23-vendor-dependency-map.md`.
+Working deliverables: `docs/CLOUD_PATH_FINDINGS.md`, `docs/YI_IPC_CLOUD_TRAFFIC_NOTES.md`, and `docs/Y23_BINARY_NETWORK_AND_RESOURCE_AUDIT.md`.
+
+### Strict disabled-service finding
+
+`MQTT=no` is now authoritative in both startup and the watchdog. `system.sh` does not launch `mqttv4`/`mqtt-config`, and `wd.sh` neither recreates them nor allows a stray instance to persist. The previously observed worker used about 201 KiB PSS / 152 KiB private memory and was the sole consumer of `/ipc_dispatch_1`. After more than one watchdog interval on the validation boot, both processes remained absent and only queue `_2` had a live consumer.
 
 ## Phase 1 — Selective vendor edge ablation
 
 The first optimization target is not "kill cloud"; it is "remove unnecessary cloud/P2P/upload work while preserving required local bootstrap behavior."
 
-### Candidate LD_PRELOAD shim
+The supported `DISABLE_CLOUD=yes` path has completed the process-level portion of this phase: transient/resident `cloud`, `p2p_tnp`, `oss`, and vendor `watch_process` were absent after repeated reboots, while the local media core remained alive. Measured removed-process cost was approximately 2,219 KiB PSS / 1,984 KiB private memory before the separate MQTT saving. Treat this as a successful checkpoint, not final proof, until the full validation matrix and WAN-disconnected boot pass.
 
-Because the vendor programs are dynamically linked, evaluate a small process-aware preload library that can selectively intercept:
+### Implemented dispatch preload controls
+
+`ipc_multiplex.so` now has two opt-in production controls:
+
+```text
+IPC_MULTIPLEX_QUEUES=2
+IPC_MULTIPLEX_DROP_CLOUD_EVENTS=1
+```
+
+The first limits mirroring to active consumers. The second drops only the six confirmed `MID2 -> MID4` detection/event opcodes. A live classifier test dropped each cloud event, retained an adjacent `MID2 -> MID1` event, and a real-dispatch test showed the same behavior. High/low RTP and recorder initialization passed after repeated reboots. This cleanup did not measurably lower `rmm` CPU because it removes routing after analysis has already occurred.
+
+A broader observation shim may still be useful for:
 
 - `connect`
 - `getaddrinfo`
@@ -157,9 +189,8 @@ Rules:
 - fail-safe behavior if the shim cannot classify a call
 - verbose diagnostic mode for live tracing before any no-op mode is enabled
 
-Initial candidate no-op edges, **only after live proof**:
+Remaining candidate no-op edges, **only after live proof**:
 
-- `rmm -> MID4` cloud/event notifications
 - telemetry-only `cloud -> cloudAPI` calls
 - `p2p_tnp -> remote sockets`
 - `oss* -> upload sockets/files`
@@ -168,19 +199,19 @@ Preserve until decoded/reimplemented:
 
 - `rmm` encoder/frame/audio initialization
 - dispatch local control routing
-- the `cloud` frame-buffer bootstrap
-- required local `cloudAPI` calls
-- `MID4 -> MID1 opcode 0x71`
+- the `MID4 -> MID1 opcode 0x71` time-ready transition, with a current epoch
 
 ## Phase 2 — Local-only boot
 
-After Phase 1 identifies the exact required edges:
+Current state and implementation order:
 
-1. reimplement the minimal frame-buffer/bootstrap operation currently supplied by `cloud`, or retain a tiny bootstrap invocation if reimplementation is unsafe;
-2. do not launch `p2p_tnp` or upload-only `oss*` workers by default;
-3. launch `mp4record` only when local recording is configured;
-4. keep dispatch and `rmm` alive;
-5. ensure the stock/vendor init path cannot start duplicate copies behind yi-hack.
+1. **Done for the supported local-only path:** do not launch `p2p_tnp`, `oss`, or vendor `watch_process`.
+2. **Done:** generate the `0x71` packet with the current epoch instead of replaying the captured 2020 payload.
+3. **Done:** replace the complete transient-cloud bootstrap with the single required local IPC state transition.
+4. **Done:** omit resident `cloud`, saving about 309 KiB PSS / 260 KiB private memory and removing the final direct-network-capable Yi process.
+5. Launch `mp4record` only when local recording is configured; the observed process cost about 283 KiB PSS.
+6. Keep dispatch and `rmm` alive and ensure the stock/vendor init path cannot start duplicate copies behind yi-hack.
+7. **Done:** gate `mqttv4` and its watchdog behavior on `MQTT=yes`.
 
 Success criteria:
 
@@ -243,17 +274,15 @@ For `h264grabber`, use PSS/private memory before deciding to merge processes. Th
 
 ## Phase 6 — Dispatch IPC reduction
 
-Do not immediately copy the Allwinner "queue 2 only" behavior.
+Implemented for the supported disabled-cloud/MQTT-off profile. `_1` was consumed only by `mqttv4`, `_2` by `ipc2file`, and `_3` through `_9` had no live consumer. `IPC_MULTIPLEX_QUEUES=2` now creates and mirrors only `_2`; an unset value or `all` preserves full diagnostic fan-out. The intended configurations are:
 
-First:
+```text
+MQTT enabled:  mirror queues _1 and _2
+MQTT disabled: mirror queue _2 only
+diagnostic:    mirror queues _1 through _9
+```
 
-1. trace queue creation and consumers;
-2. map message IDs/opcodes under normal boot and each local feature;
-3. identify queues that remain unused across representative workloads;
-4. add a diagnostic/full-fanout mode;
-5. reduce only queues that are proven unnecessary.
-
-Expected benefit is primarily cleanup and reduced IPC churn, not a guaranteed large RAM/CPU win.
+The queue reduction removes eight unused queue objects and eight send attempts per received message. The former nominal payload capacity was 288 KiB for nine queues versus 32 KiB for one, but kernel accounting and whole-system noise prevent treating the 256 KiB difference as exact resident-RAM recovery.
 
 ## Phase 7 — `rmm` internal work reduction
 
@@ -276,13 +305,26 @@ Any `rmm` patch must include:
 - recovery path
 - before/after RAM/CPU/functional measurements
 
+### First Y23 result: optional base-motion worker
+
+Runtime `pthread_create` tracing identified `motion_proc` at Thumb callback `0x000113c5` in the exact Y23 `rmm` build with SHA-256 `90276937d77850e31d3ad585121d91ca1ce11e754e1c895691df54c7a4a90969`. The opt-in `rmm_optimizations.so` suppresses only that callback, and `system.sh` refuses to enable it unless `/home/app/rmm` has MD5 `598c74819e607648abb0c3402fda957f`.
+
+A matched 20-second cold-boot A/B measured:
+
+| State | `rmm` CPU | `rmm` PSS | `rmm` private | `MemAvailable` |
+| --- | ---: | ---: | ---: | ---: |
+| motion worker enabled | 36.15% | 11,833 KiB | 11,372 KiB | 15,864 KiB |
+| motion worker omitted | 27.45% | 10,708 KiB | 10,252 KiB | 16,844 KiB |
+
+Both RTSP video streams delivered live RTP, ONVIF returned HTTP 200, and `mp4record` initialized main, sub, and AAC inputs with the worker omitted. The cost is loss of motion events and motion-triggered recording, so `DISABLE_MOTION_ANALYSIS` defaults to `no` and requires a reboot. The deployed camera remains at `no` because its selected configuration uses motion recording.
+
 ## Phase 8 — Motion and local recording separation
 
 Treat motion detection, local SD recording, and external NVR/Frigate workloads independently.
 
 Goals:
 
-- allow RTSP/ONVIF with no local motion worker
+- **Done as an opt-in mode:** allow RTSP/ONVIF with no local motion worker
 - allow local recording without requiring cloud event machinery
 - start motion at a low idle polling/processing rate where possible
 - temporarily increase sampling after motion evidence rather than continuously running the expensive path
@@ -345,15 +387,15 @@ Record CPU, MemAvailable, PSS/private dirty, socket send queues, process count, 
 
 ## Priority order
 
-1. **Dependency map and observational tracing**
-2. **Selective network/cloud edge ablation**
+1. **Validate an Internet-disconnected cold boot and complete the local feature matrix**
+2. **Remove upstream work that exists only for disabled vendor-event features while retaining selected local motion behavior**
 3. **Singleton ownership and duplicate-process prevention**
-4. **Local-only boot**
-5. **Kernel-led OOM priorities + watchdog recovery**
-6. **Streaming/backpressure memory bounds**
-7. **Dispatch queue reduction after consumer mapping**
-8. **Targeted `rmm` branch/allocation ablation**
-9. **Motion/recording specialization**
-10. **Wi-Fi and upgrade hardening**
+4. **Kernel-led OOM priorities + watchdog recovery**
+5. **Streaming/backpressure memory bounds**
+6. **Targeted `rmm` branch/allocation ablation, especially the audio/AEC path**
+7. **Motion/recording specialization**
+8. **Wi-Fi and upgrade hardening**
+
+The current static binary boundary, idle IPC sample, and `rmm` thread/memory profile are recorded in [Y23_BINARY_NETWORK_AND_RESOURCE_AUDIT.md](Y23_BINARY_NETWORK_AND_RESOURCE_AUDIT.md). They show that message suppression by itself is a small optimization; optional subsystem initialization and allocation are the higher-value targets.
 
 The main objective is the same as the successful Allwinner work: keep the smallest stable local media/control core, make everything else optional or restartable, and require live measurements before claiming a resource optimization.

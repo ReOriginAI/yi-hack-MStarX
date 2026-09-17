@@ -5,12 +5,15 @@ OBJECTS_2 = ipc2file.o
 LIBS = -lrt -lm
 LIBS_2 = -lrt -lpthread
 
-all: ipc_cmd ipc_read ipc_notify ipc2file ipc_multiplex.so
+all: ipc_cmd ipc_read ipc_notify ipc2file ipc_multiplex.so rmm_optimizations.so
 
 %o: %c $(HEADERS)
 	$(CC) -c $< -D_GNU_SOURCE -fPIC -Os -o $@
 
 ipc_multiplex.so: ipc_multiplex.c $(HEADERS)
+	$(CC) $< -D_GNU_SOURCE -fPIC -Os -shared -o $@
+
+rmm_optimizations.so: rmm_optimizations.c rmm_optimizations.h
 	$(CC) $< -D_GNU_SOURCE -fPIC -Os -shared -o $@
 
 ipc_cmd: $(OBJECTS_C)
@@ -37,6 +40,7 @@ clean:
 	rm -f ipc_notify
 	rm -f ipc2file
 	rm -f ipc_multiplex.so
+	rm -f rmm_optimizations.so
 	rm -f $(OBJECTS_C)
 	rm -f $(OBJECTS_R)
 	rm -f $(OBJECTS_N)
