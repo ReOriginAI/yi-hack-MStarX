@@ -40,7 +40,7 @@ I have no time to support the project, so feel free to clone/fork this git and m
 1. Check if your cam is supported in the "Supported cameras" section and note the file prefix.
 2. Format an SD Card as FAT32. It's recommended to format the card in the camera using the camera's native format function. If the card is already formatted, remove all the files.
 3. Download the latest release from [the Releases page](https://github.com/roleoroleo/yi-hack-MStar/releases) based on the file prefix.
-4. Extract the contents of the archive to the root of your SD card (for example home_y203c and sys_y203c).
+4. Extract the contents of the archive to the root of your SD card (home_y23 and sys_y23).
 5. Insert the SD Card and reboot the camera.
 6. The yellow light will come ON and flash for roughly 30 seconds, which means the firmware is being flashed successfully. The camera will boot up.
 7. The yellow light will come ON again for the final stage of flashing. This will take up to 2 minutes.
@@ -143,28 +143,13 @@ For example, enabling both rtsp streams is not recommended.
 Disable cloud is recommended to save resources.
 
 ## Supported cameras
-Currently this project supports only the following cameras:
+This fork targets only cameras using the `y23` firmware prefix.
 
 | Camera | Firmware | File prefix | Remarks |
 | --- | --- | --- | --- |
-| **Yi 1080p Home 4FUS** | 4.5.0* | y203c | - |
-| **Yi 1080p Home 6FUS** | 4.5.0* | y203c | - |
-| **Yi 1080p Home 9FUS** | 4.5.0* | y203c | - |
-| **Yi 1080p Home BFUS** | 4.5.0* | y203c | - |
-| **Yi 1080p Dome 6FUS** | 4.6.0* | h201c | Thanks to @skylarhays |
-| **Yi 1080p Dome BFUS** | 4.6.0* | h201c | Thanks to @skylarhays |
-| **Yi 1080p Dome 4FCN** | 4.6.0* | h201c | - |
-| **Yi 1080p Home 4FUS** | 4.2.0* | y25 | - |
-| **Yi 1080p Home 9FUS** | 4.2.0* | y25 | - |
-| **XiaoYi Camera Y3 9FCN**| 4.2.0* | y25 | - |
 | **Yi 1080p Home 6FUS** | 2.1.0* | y23 | - |
-| **Yi 1080p Home 6FCN** | unknown | y203c | - |
 | **Yi 1080p Home 4FCN** | unknown | y23 | - |
 | **Yi 1080p Home 5FCN** | 2.1.0* | y23 | - |
-| **YI Dome Camera X** | 4.0.0* | y30 | Experimental - https://github.com/roleoroleo/yi-hack-MStar/issues/262 |
-| **YI Home Camera H7** | 4.4.0* | h307 | Experimental |
-| **ieGeek IE80** | 8.0.0* | h305r | Experimental |
-
 
 This firmware completely overwrite the original firmware.
 So, USE AT YOUR OWN RISK.
@@ -211,9 +196,9 @@ Quick explanation:
 - Or you can use the following docker image https://hub.docker.com/r/borodiliz/yi-hack (thanks to@ borodiliz).
 - Copy original home and rootfs partition files to ./stock_firmware/... (don't ask me where to find them).
 - git submodule update --init
-- ./scripts/init_sysroot.all.sh
+- ./scripts/init_sysroot.sh y23
 - ./scripts/compile.sh
-- ./scripts/pack_fw.all.sh
+- ./scripts/pack_fw.sh y23
 
 ### Dev tips
 - If you kill the "rmm" process, the watchdog will reset the camera. This can be prevented by kicking it yourself in a seperate shell: while [ 1 ] ; do sleep 1; echo .; echo V > /dev/watchdog; done
