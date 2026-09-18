@@ -27,6 +27,9 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # The 2014 Linaro MStar toolchain ships 32-bit x86 host binaries.
+          # GitHub amd64 runners therefore need the matching i386 runtime.
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
             git curl unzip build-essential cmake libtool \
@@ -35,7 +38,8 @@ jobs:
             yui-compressor closure-compiler optipng jpegoptim \
             libtidy5deb1 node-less sassc sass-spec libhtml-tidy-perl \
             libxml2-utils rsync p7zip-full xz-utils mtd-utils \
-            python3 python3-venv python3-dev liblzo2-dev
+            python3 python3-venv python3-dev liblzo2-dev \
+            libc6:i386 libstdc++6:i386 libgcc-s1:i386 zlib1g:i386
 
       - name: Cache MStar cross-toolchain
         id: cache-toolchain
@@ -65,6 +69,12 @@ jobs:
           sudo tar xzf "$archive" -C /opt/yi
           test -x "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc"
           "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc" --version
+
+          # --version does not load cc1. Compile and link a tiny target binary
+          # so missing 32-bit host libraries are caught before the real build.
+          printf 'int main(void) { return 0; }\n' | \
+            "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc" -x c - -o /tmp/mstar-toolchain-smoke
+          file /tmp/mstar-toolchain-smoke
 
       - name: Install JFFS2 extractor
         run: |
