@@ -39,7 +39,7 @@ jobs:
             libtidy5deb1 node-less sassc sass-spec libhtml-tidy-perl \
             libxml2-utils rsync p7zip-full xz-utils mtd-utils \
             python3 python3-venv python3-dev liblzo2-dev \
-            libc6:i386 libstdc++6:i386 libgcc-s1:i386 zlib1g:i386
+            libc6-i386 lib32stdc++6 lib32gcc-s1 lib32z1
 
       - name: Cache MStar cross-toolchain
         id: cache-toolchain
@@ -69,6 +69,14 @@ jobs:
           sudo tar xzf "$archive" -C /opt/yi
           test -x "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc"
           "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc" --version
+
+          cc1="$MSTAR_TOOLCHAIN_DIR/libexec/gcc/arm-linux-gnueabihf/4.8.3/cc1"
+          test -x "$cc1"
+          ldd "$cc1"
+          if ldd "$cc1" | grep -q 'not found'; then
+            echo "MStar compiler host runtime is incomplete" >&2
+            exit 1
+          fi
 
           # --version does not load cc1. Compile and link a tiny target binary
           # so missing 32-bit host libraries are caught before the real build.
