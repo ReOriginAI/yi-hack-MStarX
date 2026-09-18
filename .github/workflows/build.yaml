@@ -144,9 +144,14 @@ jobs:
           version="$(cat VERSION)"
           archive="out/y23/y23_${version}.tgz"
           test -s "$archive"
-          test "$(tar tzf "$archive" | wc -l)" -eq 2
-          tar tzf "$archive" | grep -qx 'sys_y23'
-          tar tzf "$archive" | grep -qx 'home_y23'
+
+          # Save the complete archive listing before checking it. Piping tar
+          # directly into grep -q under pipefail causes grep to close early on
+          # a match, which makes tar report a broken pipe/write error.
+          tar tzf "$archive" > /tmp/y23-archive.list
+          test "$(wc -l < /tmp/y23-archive.list)" -eq 2
+          grep -qx 'sys_y23' /tmp/y23-archive.list
+          grep -qx 'home_y23' /tmp/y23-archive.list
 
           rm -rf /tmp/y23-verify /tmp/y23-home
           mkdir -p /tmp/y23-verify /tmp/y23-home
