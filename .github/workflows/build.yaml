@@ -13,11 +13,12 @@ env:
   MSTAR_TOOLCHAIN_DIR: /opt/yi/arm-linux-gnueabihf-4.8.3-201404
   Y23_BASE_VERSION: 0.5.7
   Y23_BASE_SHA256: 667c4873036695ec1d561a4a3873363e3670e4241cec36e64de248ee2963df0d
+  JEFFERSON_VERSION: 0.4.7
 
 jobs:
   build:
     name: Build y23 firmware
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out source
@@ -28,8 +29,7 @@ jobs:
       - name: Install build dependencies
         run: |
           # The 2014 Linaro MStar toolchain ships 32-bit x86 host binaries.
-          # GitHub amd64 runners therefore need the matching i386 runtime.
-          sudo dpkg --add-architecture i386
+          # Ubuntu's lib32 compatibility packages provide the runtime it needs.
           sudo apt-get update
           sudo apt-get install -y \
             git curl unzip build-essential cmake libtool \
@@ -72,8 +72,8 @@ jobs:
 
           cc1="$MSTAR_TOOLCHAIN_DIR/libexec/gcc/arm-linux-gnueabihf/4.8.3/cc1"
           test -x "$cc1"
-          ldd "$cc1"
-          if ldd "$cc1" | grep -q 'not found'; then
+          ldd "$cc1" | tee /tmp/mstar-cc1.ldd
+          if grep -q 'not found' /tmp/mstar-cc1.ldd; then
             echo "MStar compiler host runtime is incomplete" >&2
             exit 1
           fi
@@ -86,8 +86,10 @@ jobs:
 
       - name: Install JFFS2 extractor
         run: |
+          set -euo pipefail
           python3 -m venv /tmp/jefferson-venv
-          /tmp/jefferson-venv/bin/pip install --disable-pip-version-check jefferson
+          /tmp/jefferson-venv/bin/pip install --disable-pip-version-check "jefferson==${JEFFERSON_VERSION}"
+          /tmp/jefferson-venv/bin/pip show jefferson
           /tmp/jefferson-venv/bin/jefferson --help >/dev/null
 
       - name: Prepare pinned Y23 base firmware
@@ -145,6 +147,11 @@ jobs:
           archive="out/y23/y23_${version}.tgz"
           test -s "$archive"
 
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME:-}" != "$version" ]; then
+            echo "Git tag ${GITHUB_REF_NAME} does not match VERSION ${version}" >&2
+            exit 1
+          fi
+
           # Save the complete archive listing before checking it. Piping tar
           # directly into grep -q under pipefail causes grep to close early on
           # a match, which makes tar report a broken pipe/write error.
@@ -153,19 +160,37 @@ jobs:
           grep -qx 'sys_y23' /tmp/y23-archive.list
           grep -qx 'home_y23' /tmp/y23-archive.list
 
-          rm -rf /tmp/y23-verify /tmp/y23-home
-          mkdir -p /tmp/y23-verify /tmp/y23-home
-          tar xzf "$archive" -C /tmp/y23-verify home_y23
-          /tmp/jefferson-venv/bin/jefferson /tmp/y23-verify/home_y23 -d /tmp/y23-home >/tmp/jefferson-verify.log
+          # Jefferson requires that its destination path does not already
+          # exist. Create only the tar extraction directory and let Jefferson
+          # create its output directories itself.
+          rm -rf /tmp/y23-verify /tmp/y23-home /tmp/y23-rootfs
+          mkdir -p /tmp/y23-verify
+          tar xzf "$archive" -C /tmp/y23-verify home_y23 sys_y23
+          /tmp/jefferson-venv/bin/jefferson /tmp/y23-verify/home_y23 -d /tmp/y23-home >/tmp/jefferson-home-verify.log
+          /tmp/jefferson-venv/bin/jefferson /tmp/y23-verify/sys_y23 -d /tmp/y23-rootfs >/tmp/jefferson-rootfs-verify.log
+          test -d /tmp/y23-home
+          test -d /tmp/y23-rootfs
 
           version_file="$(find /tmp/y23-home -type f -path '*/yi-hack/version' -print -quit)"
-          test -n "$version_file"
+          if [ -z "$version_file" ]; then
+            echo "Unable to locate yi-hack/version in packed home_y23" >&2
+            find /tmp/y23-home -maxdepth 3 \( -type f -o -type l \) -print > /tmp/y23-home-layout.txt
+            sed -n '1,200p' /tmp/y23-home-layout.txt >&2
+            exit 1
+          fi
+
           hack_root="$(dirname "$version_file")"
+          echo "Verifying packed yi-hack tree at: $hack_root"
+          echo "Packed version: $(cat "$version_file")"
           test "$(cat "$version_file")" = "$version"
           test -f "$hack_root/script/wd.sh"
           test -f "$hack_root/etc/system.conf"
           grep -q '^RTSP_AUDIO=no$' "$hack_root/etc/system.conf"
           grep -q 'refresh_process_state' "$hack_root/script/wd.sh"
+
+          # pack_fw.sh requires and strips this file before creating sys_y23,
+          # so its presence after re-extraction is a useful rootfs integrity check.
+          test -f /tmp/y23-rootfs/ext/bin/iwconfig
 
           echo "Built firmware: $archive"
           ls -lh "$archive"
