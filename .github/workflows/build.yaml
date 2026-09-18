@@ -1,0 +1,156 @@
+name: Build Y23 firmware
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "0.*"
+
+env:
+  MSTAR_TOOLCHAIN_COMMIT: 0ffa72308c549f2c0fb96d5c88808debe8a4d77e
+  MSTAR_TOOLCHAIN_BLOB: 43113b97c3d65edf5603e22b84f307d99ec3621a
+  MSTAR_TOOLCHAIN_SHA256: ae4d2dd1b18edcb236cb3f447587dea76b60ee75aba53dcba8d42deecbdf723f
+  MSTAR_TOOLCHAIN_DIR: /opt/yi/arm-linux-gnueabihf-4.8.3-201404
+  Y23_BASE_VERSION: 0.5.7
+  Y23_BASE_SHA256: 667c4873036695ec1d561a4a3873363e3670e4241cec36e64de248ee2963df0d
+
+jobs:
+  build:
+    name: Build y23 firmware
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl unzip build-essential cmake libtool \
+            bison bisonc++ libbison-dev autoconf autotools-dev automake \
+            libssl-dev zlib1g-dev libzzip-dev flex libfl-dev \
+            yui-compressor closure-compiler optipng jpegoptim \
+            libtidy5deb1 node-less sassc sass-spec libhtml-tidy-perl \
+            libxml2-utils rsync p7zip-full xz-utils mtd-utils \
+            python3 python3-venv python3-dev liblzo2-dev
+
+      - name: Cache MStar cross-toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/yi-hack-mstar
+          key: mstar-toolchain-${{ env.MSTAR_TOOLCHAIN_BLOB }}
+
+      - name: Download pinned MStar cross-toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/yi-hack-mstar"
+          archive="$HOME/.cache/yi-hack-mstar/arm-linux-gnueabihf-4.8.3-201404.tar.gz"
+          url="https://raw.githubusercontent.com/borodiliz/docker-yi-hack/${MSTAR_TOOLCHAIN_COMMIT}/files/root/opt/yi/arm-linux-gnueabihf-4.8.3-201404.tar.gz"
+          curl --fail --location --retry 3 --retry-delay 2 "$url" -o "$archive"
+          test "$(git hash-object "$archive")" = "$MSTAR_TOOLCHAIN_BLOB"
+          echo "$MSTAR_TOOLCHAIN_SHA256  $archive" | sha256sum -c -
+
+      - name: Install MStar cross-toolchain
+        run: |
+          set -euo pipefail
+          archive="$HOME/.cache/yi-hack-mstar/arm-linux-gnueabihf-4.8.3-201404.tar.gz"
+          test "$(git hash-object "$archive")" = "$MSTAR_TOOLCHAIN_BLOB"
+          echo "$MSTAR_TOOLCHAIN_SHA256  $archive" | sha256sum -c -
+          sudo mkdir -p /opt/yi
+          sudo tar xzf "$archive" -C /opt/yi
+          test -x "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc"
+          "$MSTAR_TOOLCHAIN_DIR/bin/arm-linux-gnueabihf-gcc" --version
+
+      - name: Install JFFS2 extractor
+        run: |
+          python3 -m venv /tmp/jefferson-venv
+          /tmp/jefferson-venv/bin/pip install --disable-pip-version-check jefferson
+          /tmp/jefferson-venv/bin/jefferson --help >/dev/null
+
+      - name: Prepare pinned Y23 base firmware
+        env:
+          Y23_BASE_FIRMWARE_URL: ${{ secrets.Y23_BASE_FIRMWARE_URL }}
+          Y23_BASE_FIRMWARE_SHA256: ${{ secrets.Y23_BASE_FIRMWARE_SHA256 }}
+        run: |
+          set -euo pipefail
+          rm -rf stock_firmware/y23 sysroot/y23 /tmp/y23-base
+          mkdir -p stock_firmware/y23 /tmp/y23-base
+
+          if [ -n "${Y23_BASE_FIRMWARE_URL:-}" ]; then
+            base_url="$Y23_BASE_FIRMWARE_URL"
+            expected_sha="${Y23_BASE_FIRMWARE_SHA256:-}"
+            if [ -z "$expected_sha" ]; then
+              echo "Y23_BASE_FIRMWARE_SHA256 must be set when Y23_BASE_FIRMWARE_URL is set" >&2
+              exit 1
+            fi
+          else
+            base_url="https://github.com/roleoroleo/yi-hack-MStar/releases/download/${Y23_BASE_VERSION}/y23_${Y23_BASE_VERSION}.tgz"
+            expected_sha="$Y23_BASE_SHA256"
+          fi
+
+          curl --fail --location --retry 3 --retry-delay 2 "$base_url" -o /tmp/y23-base/y23-base.tgz
+          echo "$expected_sha  /tmp/y23-base/y23-base.tgz" | sha256sum -c -
+          tar xzf /tmp/y23-base/y23-base.tgz -C /tmp/y23-base sys_y23 home_y23
+          mv /tmp/y23-base/sys_y23 stock_firmware/y23/sys_y23.jffs2
+          mv /tmp/y23-base/home_y23 stock_firmware/y23/home_y23.jffs2
+
+          sudo env PATH="/tmp/jefferson-venv/bin:$PATH" ./scripts/init_sysroot.sh y23
+
+          # The public fallback is a pinned upstream yi-hack image rather than a
+          # private stock dump. Remove its hack payload before overlaying this
+          # repository's freshly built payload. A private base archive can be
+          # supplied through the two repository secrets above instead.
+          sudo rm -rf sysroot/y23/home/yi-hack
+
+      - name: Build firmware payload
+        run: |
+          set -euo pipefail
+          export PATH="$MSTAR_TOOLCHAIN_DIR/bin:$PATH"
+          bash -ex ./scripts/compile.sh
+
+      - name: Pack Y23 firmware
+        run: |
+          set -euo pipefail
+          export PATH="$MSTAR_TOOLCHAIN_DIR/bin:$PATH"
+          rm -rf out/y23
+          sudo env PATH="$PATH" bash -ex ./scripts/pack_fw.sh y23
+
+      - name: Verify firmware bundle
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          archive="out/y23/y23_${version}.tgz"
+          test -s "$archive"
+          test "$(tar tzf "$archive" | wc -l)" -eq 2
+          tar tzf "$archive" | grep -qx 'sys_y23'
+          tar tzf "$archive" | grep -qx 'home_y23'
+
+          rm -rf /tmp/y23-verify /tmp/y23-home
+          mkdir -p /tmp/y23-verify /tmp/y23-home
+          tar xzf "$archive" -C /tmp/y23-verify home_y23
+          /tmp/jefferson-venv/bin/jefferson /tmp/y23-verify/home_y23 -d /tmp/y23-home >/tmp/jefferson-verify.log
+
+          version_file="$(find /tmp/y23-home -type f -path '*/yi-hack/version' -print -quit)"
+          test -n "$version_file"
+          hack_root="$(dirname "$version_file")"
+          test "$(cat "$version_file")" = "$version"
+          test -f "$hack_root/script/wd.sh"
+          test -f "$hack_root/etc/system.conf"
+          grep -q '^RTSP_AUDIO=no$' "$hack_root/etc/system.conf"
+          grep -q 'refresh_process_state' "$hack_root/script/wd.sh"
+
+          echo "Built firmware: $archive"
+          ls -lh "$archive"
+
+      - name: Upload Y23 firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: yi-hack-MStarX-y23-firmware
+          path: out/y23/y23_*.tgz
+          if-no-files-found: error
+          compression-level: 0

@@ -189,16 +189,17 @@ data:
 ``` 
 
 ## Build your own firmware
-If you want to build your own firmware, clone this git and compile using a linux machine.
-Quick explanation:
-- Download and install the SDK for MStar platform: the file name is "MStar MSC3XX SDK.zip" (Google is your friend).
-- Prepare the system installing all the necessary packages.
-- Or you can use the following docker image https://hub.docker.com/r/borodiliz/yi-hack (thanks to@ borodiliz).
-- Copy original home and rootfs partition files to ./stock_firmware/... (don't ask me where to find them).
-- git submodule update --init
-- ./scripts/init_sysroot.sh y23
-- ./scripts/compile.sh
-- ./scripts/pack_fw.sh y23
+GitHub Actions is the recommended reproducible build path for this fork. The `Build Y23 firmware` workflow can be started manually from the Actions tab and also runs for tags matching `0.*`. A successful run uploads `yi-hack-MStarX-y23-firmware`, containing `y23_<VERSION>.tgz`.
+
+The workflow installs the exact MStar cross-toolchain expected by the source tree, initializes the Y23 sysroot, compiles every module, packs the two JFFS2 images, verifies the resulting archive, and uploads it as an Actions artifact. The public CI fallback uses the pinned upstream `y23_0.5.7.tgz` image as its vendor filesystem base. If you have a clean Y23 stock dump hosted at an accessible URL, set the repository secrets `Y23_BASE_FIRMWARE_URL` and `Y23_BASE_FIRMWARE_SHA256`; CI will use that archive instead.
+
+For a local build:
+- Install the MStar `arm-linux-gnueabihf-4.8.3-201404` toolchain under `/opt/yi/arm-linux-gnueabihf-4.8.3-201404`.
+- Copy `home_y23.jffs2` and `sys_y23.jffs2` (or their `.tgz` filesystem dumps) into `stock_firmware/y23/`.
+- `git submodule update --init --recursive`
+- `sudo ./scripts/init_sysroot.sh y23`
+- `./scripts/compile.sh`
+- `sudo ./scripts/pack_fw.sh y23`
 
 ### Dev tips
 - If you kill the "rmm" process, the watchdog will reset the camera. This can be prevented by kicking it yourself in a seperate shell: while [ 1 ] ; do sleep 1; echo .; echo V > /dev/watchdog; done
