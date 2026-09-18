@@ -86,8 +86,23 @@ jffs2_copy()
     if [ "x$JEFFERSON" == "x1" ]
     then
       echo "jefferson mode. Extracting content to \"$TMP_DIR\"."
-      jefferson $JFFS2_FILE -d $TMP_DIR/tmp || exit 1
-      rsync -a $TMP_DIR/tmp/fs_1/* $DEST_DIR || exit 1
+      local EXTRACT_DIR="$TMP_DIR/tmp"
+      jefferson "$JFFS2_FILE" -d "$EXTRACT_DIR" || exit 1
+
+      # Jefferson changed its output layout across releases. Older versions
+      # place the filesystem under fs_1/, while current versions extract the
+      # JFFS2 root directly into the requested destination directory.
+      if [ -d "$EXTRACT_DIR/fs_1" ]; then
+          EXTRACT_DIR="$EXTRACT_DIR/fs_1"
+      fi
+
+      if [ ! -d "$EXTRACT_DIR" ]; then
+          echo "ERROR: Jefferson did not create an extractable filesystem tree."
+          exit 1
+      fi
+
+      # The trailing slash copies the filesystem contents, including dotfiles.
+      rsync -a "$EXTRACT_DIR/" "$DEST_DIR/" || exit 1
     else
       jffs2_mount $JFFS2_FILE $TMP_DIR
       rsync -a $TMP_DIR/* $DEST_DIR
