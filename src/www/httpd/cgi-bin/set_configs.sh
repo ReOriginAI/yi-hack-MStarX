@@ -1,145 +1,101 @@
 #!/bin/sh
-
-YI_HACK_PREFIX="/home/yi-hack"
-
-sedencode(){
-#  echo -e "$(sed 's/\\/\\\\\\/g;s/\&/\\\&/g;s/\//\\\//g;')"
-  echo "$(sed 's/\\/\\\\/g;s/\"/\\\"/g;s/\&/\\\&/g;s/\//\\\//g;')"
-}
-
-removedoublequotes(){
-  echo "$(sed 's/^"//g;s/"$//g')"
-}
-
-validateDT()
-{
-    for x in 1 2 3 4 5 6 10 15 20 30 60 120 180 240 360 1440; do
-        if [ "$x" == "$1" ]; then
-            return 0
-        fi
-    done
-    if [ "${1:0:5}" == "1440+" ]; then
-        OFF="${1:5:10}"
-        if [ ! -z $OFF ]; then
-            case $OFF in
-                ''|*[!0-9]* )
-                    OFF_OK=0;;
-                * )
-                    OFF_OK=1;;
+YI_HACK_PREFIX=${YI_HACK_PREFIX:-/home/yi-hack}
+. "$YI_HACK_PREFIX/script/config_work.sh"
+. "$YI_HACK_PREFIX/script/upload.sh"
+fail() { printf 'Content-type: application/json\r\n\r\n{"error":true}\n'; exit 1; }
+case "${QUERY_STRING:-}" in
+    conf=system) NAME=system ;; conf=camera) NAME=camera ;;
+    conf=mqtt) NAME=mqttv4 ;; conf=mqtt_advertise) NAME=mqtt_advertise ;; conf=proxychains) NAME=proxychains ;;
+    *) fail ;;
+esac
+CONF_FILE="$YI_HACK_PREFIX/etc/$NAME.conf"
+[ -f "$CONF_FILE" ] && [ ! -L "$CONF_FILE" ] || fail
+config_work_begin || fail
+upload_read 16384 "$CONFIG_WORK/body" || fail
+jq -e 'type == "object" and length <= 100 and all(to_entries[];
+    (.key | test("^[A-Z][A-Z0-9_]*$")) and (.value | type == "string") and
+    (.value | length <= 4096) and (.value | test("[\u0000-\u0008\u000b-\u001f]") | not))' "$CONFIG_WORK/body" >/dev/null 2>&1 || fail
+# Reject embedded newlines except the existing escaped crontab representation.
+jq -e 'all(to_entries[]; (.key == "CRONTAB" or (.value | test("[\\r\\n]") | not)))' "$CONFIG_WORK/body" >/dev/null 2>&1 || fail
+OLD_BC=$(config_get RTSP_BACKCHANNEL)
+cp "$CONF_FILE" "$CONFIG_WORK/new.conf" || fail
+jq -r 'keys[]' "$CONFIG_WORK/body" > "$CONFIG_WORK/keys" || fail
+while IFS= read -r KEY; do
+    VALUE=$(jq -r --arg k "$KEY" '.[$k]' "$CONFIG_WORK/body") || fail
+    case "$KEY" in
+        HOSTNAME)
+            [ "$NAME" = system ] || fail
+            if [ -z "$VALUE" ]; then
+                MAC=$(cat /sys/class/net/wlan0/address 2>/dev/null | cut -d: -f5,6 | tr -d :)
+                if [ -n "$MAC" ]; then VALUE=yi-$MAC; else VALUE=yi-hack; fi
+            fi
+            printf '%s\n' "$VALUE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$' || fail
+            printf '%s\n' "$VALUE" > "$CONFIG_WORK/hostname" ;;
+        TIMEZONE) [ "$NAME" = system ] || fail; printf '%s\n' "$VALUE" > "$CONFIG_WORK/TZ" ;;
+        MOTION_IMAGE_DELAY)
+            VALUE=$(printf '%s' "$VALUE" | tr , .)
+            printf '%s\n' "$VALUE" | grep -Eq '^[0-9]+([.][0-9]+)?$' || fail
+            awk -v v="$VALUE" 'BEGIN {exit !(v<=5)}' || fail
+            sed -i "/^$KEY=/d" "$CONFIG_WORK/new.conf"
+            printf '%s=%s\n' "$KEY" "$VALUE" >> "$CONFIG_WORK/new.conf" ;;
+        TIMELAPSE_DT)
+            case "$VALUE" in
+                1|2|3|4|5|6|10|15|20|30|60|120|180|240|360|1440) ;;
+                1440+*) OFFSET=${VALUE#1440+}; case "$OFFSET" in ''|*[!0-9]*|??????*) fail ;; esac
+                    [ "$OFFSET" -le 1440 ] || fail ;;
+                *) fail ;;
             esac
-            if [ "$OFF_OK" == "1" ] && [ $OFF -le 1440 ]; then
-                return 0
-            fi
-        fi
-    fi
-
-    return 1
-}
-
-get_conf_type()
-{
-    CONF="$(echo $QUERY_STRING | cut -d'=' -f1)"
-    VAL="$(echo $QUERY_STRING | cut -d'=' -f2)"
-
-    if [ $CONF == "conf" ] ; then
-        echo $VAL
-    fi
-}
-
-. $YI_HACK_PREFIX/www/cgi-bin/validate.sh
-
-if ! $(validateQueryString $QUERY_STRING); then
-    printf "Content-type: application/json\r\n\r\n"
-    printf "{\n"
-    printf "\"%s\":\"%s\"\\n" "error" "true"
-    printf "}"
-    exit
+            sed -i "/^$KEY=/d" "$CONFIG_WORK/new.conf"
+            printf '%s=%s\n' "$KEY" "$VALUE" >> "$CONFIG_WORK/new.conf" ;;
+        RTSP_BACKCHANNEL|ONVIF_AUDIO_BC)
+            [ "$NAME" = system ] || fail
+            case "$VALUE" in G711|g711|ulaw) VALUE=G711 ;; AAC|aac) VALUE=AAC ;; NONE|none|'') VALUE=NONE ;; *) fail ;; esac
+            for MIRROR in RTSP_BACKCHANNEL ONVIF_AUDIO_BC; do
+                sed -i "/^$MIRROR=/d" "$CONFIG_WORK/new.conf"
+                printf '%s=%s\n' "$MIRROR" "$VALUE" >> "$CONFIG_WORK/new.conf"
+            done ;;
+        RTSP_PORT|HTTPD_PORT) valid_port "$VALUE" || fail
+            sed -i "/^$KEY=/d" "$CONFIG_WORK/new.conf"
+            printf '%s=%s\n' "$KEY" "$VALUE" >> "$CONFIG_WORK/new.conf" ;;
+        PROXYCHAINS_SERVERS)
+            [ "$NAME" = proxychains ] || fail
+            cp "$CONF_FILE.template" "$CONFIG_WORK/new.conf" || fail
+            printf '%s\n' "$VALUE" | tr ';' '\n' >> "$CONFIG_WORK/new.conf" ;;
+        *)
+            grep -q "^$KEY=" "$CONF_FILE" || fail
+            # Use plain text instead of interpolating user input into sed code.
+            sed -i "/^$KEY=/d" "$CONFIG_WORK/new.conf"
+            if [ "$KEY" = CRONTAB ]; then VALUE=$(printf '%s' "$VALUE" | awk '{printf "%s%s",sep,$0; sep="\\n"}'); fi
+            printf '%s=%s\n' "$KEY" "$VALUE" >> "$CONFIG_WORK/new.conf" ;;
+    esac
+done < "$CONFIG_WORK/keys"
+[ "$(wc -c < "$CONFIG_WORK/new.conf")" -le 65536 ] || fail
+if [ "$NAME" = system ]; then
+    ENABLED=$(grep -m 1 '^WIFI_MAINTENANCE_ENABLED=' "$CONFIG_WORK/new.conf")
+    case "${ENABLED#*=}" in
+        yes)
+            SSID=$(grep -m 1 '^WIFI_MAINTENANCE_SSID=' "$CONFIG_WORK/new.conf"); SSID=${SSID#*=}
+            PASS=$(grep -m 1 '^WIFI_MAINTENANCE_PASSWORD=' "$CONFIG_WORK/new.conf"); PASS=${PASS#*=}
+            SSID_SIZE=$(printf '%s' "$SSID" | wc -c); PASS_SIZE=$(printf '%s' "$PASS" | wc -c)
+            [ "$SSID_SIZE" -ge 1 ] && [ "$SSID_SIZE" -le 32 ] && [ "$PASS_SIZE" -ge 8 ] && [ "$PASS_SIZE" -le 63 ] || fail ;;
+        no|'') ;;
+        *) fail ;;
+    esac
 fi
-
-CONF_TYPE="$(get_conf_type)"
-CONF_FILE=""
-
-if [ "$CONF_TYPE" == "mqtt" ] ; then
-    CONF_FILE="$YI_HACK_PREFIX/etc/mqttv4.conf"
-else
-    CONF_FILE="$YI_HACK_PREFIX/etc/$CONF_TYPE.conf"
-fi
-
-read -r POST_DATA
-# Validate json
-VALID=$(echo "$POST_DATA" | jq -e . >/dev/null 2>&1; echo $?)
-if [ "$VALID" != "0" ]; then
-    printf "Content-type: application/json\r\n\r\n"
-    printf "{\n"
-    printf "\"%s\":\"%s\"\\n" "error" "true"
-    printf "}"
-    exit
-fi
-# Change temporarily \n with \t (2 bytes)
-POST_DATA="${POST_DATA//\\n/\\t}"
-IFS=$(echo -en "\n\b")
-ROWS=$(echo "$POST_DATA" | jq -r '. | keys[] as $k | "\($k)=\(.[$k])"')
-for ROW in $ROWS; do
-    ROW=$(echo "$ROW" | removedoublequotes)
-    KEY=$(echo "$ROW" | cut -d'=' -f1)
-    # Change back tab with \n
-    VALUE=$(echo "$ROW" | cut -d'=' -f2- | sed 's/\t/\\n/g')
-
-    if ! $(validateKey $KEY); then
-        printf "Content-type: application/json\r\n\r\n"
-        printf "{\n"
-        printf "\"%s\":\"%s\"\\n" "error" "true"
-        printf "}"
-        exit
-    fi
-
-    if [ "$KEY" == "HOSTNAME" ] ; then
-        if [ -z $VALUE ] ; then
-
-            # Use 2 last MAC address numbers to set a different hostname
-            MAC=$(cat /sys/class/net/wlan0/address|cut -d ':' -f 5,6|sed 's/://g')
-            if [ "$MAC" != "" ]; then
-                hostname yi-$MAC
-            else
-                hostname yi-hack
-            fi
-            hostname > $YI_HACK_PREFIX/etc/hostname
-        else
-            hostname $VALUE
-            echo "$VALUE" > $YI_HACK_PREFIX/etc/hostname
-        fi
-    elif [ "$KEY" == "TIMEZONE" ] ; then
-        echo $VALUE > $YI_HACK_PREFIX/etc/TZ
-    elif [ "$KEY" == "MOTION_IMAGE_DELAY" ] ; then
-        if $(validateNumber $VALUE); then
-            VALUE=$(echo $VALUE | sed 's/,/./g')
-            VAR=$(awk 'BEGIN{ print "'$VALUE'"<="'5.0'" }')
-            if [ "$VAR" == "1" ]; then
-                sed -i "s/^\(${KEY}\s*=\s*\).*$/\1${VALUE}/" $CONF_FILE
-            fi
-        fi
-    elif [ "$KEY" == "PROXYCHAINS_SERVERS" ] ; then
-        VALUE=$(echo $VALUE | sed 's/^\"//g')
-        VALUE=$(echo $VALUE | sed 's/\"$//g')
-        VALUE=$(echo $VALUE | sed 's/;/\\n/g')
-        cat $CONF_FILE.template > $CONF_FILE
-        echo -e $VALUE >> $CONF_FILE
-    elif [ "$KEY" == "TIMELAPSE_DT" ] ; then
-        if $(validateDT $VALUE); then
-            sed -i "s/^\(${KEY}\s*=\s*\).*$/\1${VALUE}/" $CONF_FILE
-        fi
-    else
-        KEY=$(echo "$KEY" | sedencode)
-        VALUE=$(echo "$VALUE" | sedencode)
-        sed -i "s/^\(${KEY}\s*=\s*\).*$/\1${VALUE}/" $CONF_FILE
-    fi
-
+# Prepare every small flash replacement before committing it.
+CONFIG_FLASH_FILES="$NAME.conf"
+cp "$CONFIG_WORK/new.conf" "$YI_HACK_PREFIX/etc/.$NAME.conf.new" || fail
+chmod 0644 "$YI_HACK_PREFIX/etc/.$NAME.conf.new" || fail
+mv -f "$YI_HACK_PREFIX/etc/.$NAME.conf.new" "$CONF_FILE" || fail
+for FILE in hostname TZ; do
+    [ ! -f "$CONFIG_WORK/$FILE" ] || cp "$CONFIG_WORK/$FILE" "$YI_HACK_PREFIX/etc/$FILE" || fail
 done
-
-# Yeah, it's pretty ugly.
-
-printf "Content-type: application/json\r\n\r\n"
-
-printf "{\n"
-printf "\"%s\":\"%s\"\\n" "error" "false"
-printf "}"
+[ ! -f "$CONFIG_WORK/hostname" ] || hostname "$(cat "$CONFIG_WORK/hostname")" || fail
+NEW_BC=$(config_get RTSP_BACKCHANNEL)
+config_work_cleanup
+trap - 0 1 2 15
+if [ "$NAME" = system ] && [ "$OLD_BC" != "$NEW_BC" ]; then
+    "$YI_HACK_PREFIX/script/service.sh" rtsp recover >/dev/null 2>&1
+    "$YI_HACK_PREFIX/script/service.sh" onvif recover >/dev/null 2>&1
+fi
+printf 'Content-type: application/json\r\n\r\n{"error":false}\n'

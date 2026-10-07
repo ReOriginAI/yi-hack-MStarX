@@ -368,7 +368,7 @@ int main(int argc, char **argv)
     }
 
     if (fifo == 0) {
-        char stdoutbuf[262144];
+        static char stdoutbuf[4096];
 
         if (setvbuf(stdout, stdoutbuf, _IOFBF, sizeof(stdoutbuf)) != 0) {
             fprintf(stderr, "Error setting stdout buffer\n");

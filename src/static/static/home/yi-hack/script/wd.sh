@@ -3,12 +3,13 @@
 CONF_FILE="etc/system.conf"
 CAMERA_CONF_FILE="etc/camera.conf"
 
-YI_HACK_PREFIX="/home/yi-hack"
+YI_HACK_PREFIX=${YI_HACK_PREFIX:-/home/yi-hack}
+. "$YI_HACK_PREFIX/script/runtime.sh"
 START_STOP_SCRIPT=$YI_HACK_PREFIX/script/service.sh
 
 #LOG_FILE="/tmp/sd/wd.log"
 LOG_FILE="/dev/null"
-LOGWIFI_FILE="/tmp/sd/hack_wififailsafe.log"
+LOGWIFI_FILE="/tmp/hack_wififailsafe.log"
 
 COUNTER_H=0
 COUNTER_L=0
@@ -38,34 +39,13 @@ get_config()
 
 restart_rtsp()
 {
-    $START_STOP_SCRIPT rtsp start
+    # Ensure preserves explicit stop and privacy intent, even if it changed
+    # between the watchdog sample and acquiring the service lock.
+    "$START_STOP_SCRIPT" rtsp ensure >/dev/null 2>&1
 }
-
-restart_standard_rtsp()
-{
-    killall -q rRTSPServer
-    killall -q h264grabber h264grabber_l h264grabber_h
-    sleep 1
-    restart_rtsp
-}
-
-restart_alternative_rtsp()
-{
-    killall -q rtsp_server_yi
-    killall -q h264grabber_l
-    killall -q h264grabber_h
-    sleep 1
-    restart_rtsp
-}
-
-restart_go2rtc_rtsp()
-{
-    killall -q go2rtc
-    killall -q h264grabber_l
-    killall -q h264grabber_h
-    sleep 1
-    restart_rtsp
-}
+restart_standard_rtsp() { restart_rtsp; }
+restart_alternative_rtsp() { restart_rtsp; }
+restart_go2rtc_rtsp() { restart_rtsp; }
 
 refresh_process_state()
 {
@@ -106,13 +86,15 @@ refresh_rtsp_socket_state()
     # Avoid spawning netstat.  Linux TCP state 0A is LISTEN and 01 is
     # ESTABLISHED.  RTSP listens on IPv4 on the current Y23, but include tcp6
     # as well so this remains correct if a future server binds there.
+    TCP_FILES=/proc/net/tcp
+    [ ! -r /proc/net/tcp6 ] || TCP_FILES="$TCP_FILES /proc/net/tcp6"
     set -- `awk -v p=":$RTSP_PORT_HEX" '
         $2 ~ (p "$") {
             if ($4 == "0A") listen++
             if ($4 == "01") established++
         }
         END { print listen+0, established+0 }
-    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null`
+    ' $TCP_FILES 2>/dev/null`
     LISTEN=$1
     SOCKET=$2
 }
@@ -204,7 +186,7 @@ check_standard_rtsp_stall()
 
     if [ $COUNTER_L -ge $COUNTER_LIMIT ] || [ $COUNTER_H -ge $COUNTER_LIMIT ]; then
         echo "$(date +'%Y-%m-%d %H:%M:%S') - Restarting stalled RTSP processes" >> $LOG_FILE
-        restart_standard_rtsp
+        "$START_STOP_SCRIPT" rtsp recover >/dev/null 2>&1
         COUNTER_L=0
         COUNTER_H=0
         reset_rtsp_cpu_baseline
@@ -231,7 +213,7 @@ check_rtsp()
     fi
 
     if [[ "$RTSP_RES" == "low" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_L" -eq 0 ] || [ "$PS_RTSP_STANDARD" -eq 0 ]; then
+        if [ "$PS_1_L" -ne 1 ] || [ "$PS_RTSP_STANDARD" -ne 1 ]; then
             echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for low res, restarting..." >> $LOG_FILE
             restart_standard_rtsp
             COUNTER_L=0
@@ -242,7 +224,7 @@ check_rtsp()
     fi
 
     if [[ "$RTSP_RES" == "high" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_H" -eq 0 ] || [ "$PS_RTSP_STANDARD" -eq 0 ]; then
+        if [ "$PS_1_H" -ne 1 ] || [ "$PS_RTSP_STANDARD" -ne 1 ]; then
             echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for high res, restarting..." >> $LOG_FILE
             restart_standard_rtsp
             COUNTER_L=0
@@ -275,14 +257,14 @@ check_rtsp_alt()
         return
     fi
     if [[ "$RTSP_RES" == "low" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_L" -eq 0 ] || [ "$PS_RTSP_ALT" -eq 0 ]; then
+        if [ "$PS_1_L" -ne 1 ] || [ "$PS_RTSP_ALT" -ne 1 ]; then
             echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for low res, restarting..." >> $LOG_FILE
             restart_alternative_rtsp
             return
         fi
     fi
     if [[ "$RTSP_RES" == "high" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_H" -eq 0 ] || [ "$PS_RTSP_ALT" -eq 0 ]; then
+        if [ "$PS_1_H" -ne 1 ] || [ "$PS_RTSP_ALT" -ne 1 ]; then
             echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for high res, restarting..." >> $LOG_FILE
             restart_alternative_rtsp
             return
@@ -292,29 +274,9 @@ check_rtsp_alt()
 
 check_rtsp_go2rtc()
 {
-    if [[ "$CAMERA_SWITCH" != "yes" ]] ; then
-        echo "Camera is switched off no rtsp restart needed" >> $LOG_FILE
-        return
-    fi
-
-    if [ "$LISTEN" -eq 0 ]; then
-        echo "$(date +'%Y-%m-%d %H:%M:%S') - Restarting rtsp process" >> $LOG_FILE
+    # Exec producers and speaker helpers are deliberately absent while idle.
+    if [ "$LISTEN" -eq 0 ] || [ "$PS_RTSP_GO2RTC" -ne 1 ]; then
         restart_go2rtc_rtsp
-        return
-    fi
-    if [[ "$RTSP_RES" == "low" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_L" -eq 0 ] || [ "$PS_RTSP_GO2RTC" -eq 0 ]; then
-            echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for low res, restarting..." >> $LOG_FILE
-            restart_go2rtc_rtsp
-            return
-        fi
-    fi
-    if [[ "$RTSP_RES" == "high" ]] || [[ "$RTSP_RES" == "both" ]]; then
-        if [ "$PS_1_H" -eq 0 ] || [ "$PS_RTSP_GO2RTC" -eq 0 ]; then
-            echo "$(date +'%Y-%m-%d %H:%M:%S') - No running processes for high res, restarting..." >> $LOG_FILE
-            restart_go2rtc_rtsp
-            return
-        fi
     fi
 }
 
@@ -331,94 +293,126 @@ check_mqtt()
 {
     if [[ "$MQTT_ENABLED" != "yes" ]] ; then
         if [ "$PS_MQTT" -gt 0 ]; then
-            $START_STOP_SCRIPT mqtt stop >/dev/null 2>&1
+            $START_STOP_SCRIPT mqtt ensure >/dev/null 2>&1
         fi
         if [ "$PS_MQTT_CONFIG" -gt 0 ]; then
-            $START_STOP_SCRIPT mqtt-config stop >/dev/null 2>&1
+            $START_STOP_SCRIPT mqtt-config ensure >/dev/null 2>&1
         fi
         return
     fi
 
     if [ "$PS_MQTT" -eq 0 ]; then
         echo "check_mqtt failed, restart it!" >> $LOG_FILE
-        $START_STOP_SCRIPT mqtt start
+        $START_STOP_SCRIPT mqtt ensure
     fi
+}
+
+wifi_log()
+{
+    "$YI_HACK_PREFIX/script/bounded_log.sh" "$LOGWIFI_FILE" "$(date): $*"
 }
 
 check_wifi()
 {
-    WIFI_STATUS=`wpa_cli -i wlan0 status 2>&1`
+    WIFI_STATUS=$(wpa_cli -i wlan0 status 2>&1)
     case "$WIFI_STATUS" in
         *"wpa_state=COMPLETED"*)
-            failsafecounter=0
-            return
-            ;;
+            if [ "$failsafecounter" -gt 0 ]; then
+                # Renew the existing DHCP client, do not create a second one.
+                killall -USR1 udhcpc 2>/dev/null || :
+                wifi_log 'Association restored'
+            fi
+            failsafecounter=0; return ;;
     esac
-
-    if [ -e "$LOGWIFI_FILE" ]; then
-        /usr/bin/tail -n 145 "$LOGWIFI_FILE" > "$LOGWIFI_FILE.tmp" && mv "$LOGWIFI_FILE.tmp" "$LOGWIFI_FILE"
-    fi
-    echo -e "$(date): Wifi connection lost:\n$WIFI_STATUS" >> "$LOGWIFI_FILE"
-    failsafecounter=$((failsafecounter + 1))
-
-    if [ "$failsafecounter" -ge 6 ]; then
-        echo -e "$(date): Wifi connection still could't be restored. Restarting." >> "$LOGWIFI_FILE"
-        sync
-        reboot -f
-    fi
-
-    echo -e "$(date): Attempting reconnect." >> "$LOGWIFI_FILE"
-    sleep 2
-    ifconfig wlan0 down
-    sleep 1
-    ifconfig wlan0 up
-    sleep 1
-    wpa_cli -i wlan0 reconfigure >/dev/null 2>&1
+    failsafecounter=$((failsafecounter+1))
+    wifi_log "Association lost; soft recovery attempt $failsafecounter"
+    case "$failsafecounter" in
+        1) wpa_cli -i wlan0 reassociate >/dev/null 2>&1 ;;
+        2) wpa_cli -i wlan0 reconfigure >/dev/null 2>&1 ;;
+        3) if [ -f /tmp/wifi_maintenance_active ]; then PROFILE=maintenance; else PROFILE=primary; fi
+            "$YI_HACK_PREFIX/script/wifi_failover.sh" "$PROFILE" >/dev/null 2>&1 ;;
+        6) "$YI_HACK_PREFIX/script/wifi_failover.sh" maintenance >/dev/null 2>&1 ;;
+        *)
+            # Leave the interface up. A missing maintenance profile does not
+            # justify a reboot loop or repeated SDIO down/up transitions.
+            if [ "$failsafecounter" -ge 12 ]; then
+                wpa_cli -i wlan0 reassociate >/dev/null 2>&1
+                failsafecounter=6
+            fi ;;
+    esac
 }
 
-if [[ $(get_config RTSP) == "no" ]] ; then
-    exit
-fi
+# Use the already cached process table for optional-service recovery.
+cached_count()
+{
+    printf '%s\n' "$PS_OUTPUT" | awk -v name="$1" '
+        NR>1 {cmd=$4; gsub(/[{}]/,"",cmd); sub(/^.*\//,"",cmd); if (cmd==name) n++}
+        END {print n+0}'
+}
 
-case $(get_config RTSP_PORT) in
-    ''|*[!0-9]*) RTSP_PORT_NUMBER=554 ;;
-    *) RTSP_PORT_NUMBER=$(get_config RTSP_PORT) ;;
-esac
-RTSP_PORT_HEX=`printf '%04X' "$RTSP_PORT_NUMBER"`
+check_local_services()
+{
+    for spec in 'onvif:ONVIF:onvif_notify_server' 'wsdd:ONVIF_WSDD:wsd_simple_server' \
+        'ftpd:FTPD:pure-ftpd' 'mqtt:MQTT:mqttv4' 'mqtt-config:MQTT:mqtt-config' \
+        'httpd:HTTPD:httpd' 'sshd:SSHD:dropbear' 'telnetd:TELNETD:telnetd' \
+        'ntpd:NTPD:ntpd' 'mdnsd:MDNSD:mdnsd'; do
+        NAME=${spec%%:*}; rest=${spec#*:}; KEY=${rest%%:*}; DAEMON=${rest#*:}
+        [ "$NAME" != ftpd ] || [ "$(get_config BUSYBOX_FTPD)" != yes ] || DAEMON=tcpsvd
+        COUNT=$(cached_count "$DAEMON")
+        if [ "$(get_config "$KEY")" = yes ] && [ ! -f "/tmp/yi-service-state/$NAME.stopped" ]; then
+            if [ "$COUNT" -eq 0 ] || { [ "$NAME" != sshd ] && [ "$COUNT" -gt 1 ]; }; then
+                "$START_STOP_SCRIPT" "$NAME" ensure >/dev/null 2>&1
+            fi
+        elif [ "$COUNT" -gt 0 ]; then
+            "$START_STOP_SCRIPT" "$NAME" ensure >/dev/null 2>&1
+        fi
+    done
+    REC_COUNT=$(cached_count mp4record)
+    if [ "$REC_COUNT" -ne 1 ] || [ "$CAMERA_SWITCH" != yes ] || [ -f /tmp/privacy ] ||
+        [ -f /tmp/yi-service-state/mp4record.stopped ] ||
+        { [ "$(get_config DISABLE_CLOUD)" != no ] && [ "$(get_config REC_WITHOUT_CLOUD)" != yes ]; }; then
+        "$START_STOP_SCRIPT" mp4record ensure >/dev/null 2>&1
+    fi
+    # Repair a lost queue consumer while ONVIF itself remains alive.
+    if [ "$(cached_count onvif_notify_server)" -eq 1 ] && [ "$(cached_count ipc2file)" -ne 1 ]; then
+        "$START_STOP_SCRIPT" onvif ensure >/dev/null 2>&1
+    fi
+}
 
-# These values take effect when their services start, so read them once rather
-# than spawning configuration pipelines in every watchdog pass.
-RTSP_ALT=$(get_config RTSP_ALT)
-RTSP_RES=$(get_config RTSP_STREAM)
-MQTT_ENABLED=$(get_config MQTT)
+WATCHDOG_LOCK=/tmp/yi-watchdog.lock.d
+lock_acquire "$WATCHDOG_LOCK" || exit 0
+trap 'lock_release "$WATCHDOG_LOCK"' 0
+trap 'exit 1' 1 2 15
 failsafecounter=0
-
-echo "$(date +'%Y-%m-%d %H:%M:%S') - Starting RTSP watchdog..." >> $LOG_FILE
-
-while true
-do
+POLICY_COUNTER=0
+while true; do
     refresh_process_state
+    RTSP_PORT_NUMBER=$(get_config RTSP_PORT)
+    valid_port "$RTSP_PORT_NUMBER" || RTSP_PORT_NUMBER=554
+    RTSP_PORT_HEX=$(printf '%04X' "$RTSP_PORT_NUMBER")
     refresh_rtsp_socket_state
     CAMERA_SWITCH=$(get_camera_config SWITCH_ON)
-
-    if [[ "$RTSP_ALT" == "standard" ]] ; then
-        check_rtsp
-    elif [[ "$RTSP_ALT" == "alternative" ]] ; then
-        check_rtsp_alt
+    RTSP_ALT=$(get_config RTSP_ALT)
+    RTSP_RES=$(get_config RTSP_STREAM)
+    MQTT_ENABLED=$(get_config MQTT)
+    if [ "$RTSP_ALT" = go2rtc ] && [ ! -x "$YI_HACK_PREFIX/bin/go2rtc" ] && [ ! -x /tmp/sd/yi-hack/bin/go2rtc ]; then RTSP_ALT=standard; fi
+    if [ "$(get_config RTSP)" = yes ] && [ "$CAMERA_SWITCH" = yes ] && [ ! -f /tmp/privacy ] && [ ! -f /tmp/yi-service-state/rtsp.stopped ]; then
+        case "$RTSP_ALT" in
+            alternative) check_rtsp_alt ;; go2rtc) check_rtsp_go2rtc ;; *) check_rtsp ;;
+        esac
     else
-        check_rtsp_go2rtc
+        COUNTER_L=0; COUNTER_H=0; reset_rtsp_cpu_baseline
+        if [ "$PS_RTSP_STANDARD" -gt 0 ] || [ "$PS_RTSP_ALT" -gt 0 ] || [ "$PS_RTSP_GO2RTC" -gt 0 ]; then
+            "$START_STOP_SCRIPT" rtsp ensure >/dev/null 2>&1
+        fi
     fi
-
     check_rmm
     check_mqtt
     check_wifi
-
-    # Normal cadence remains ten seconds.  Once cumulative CPU ticks indicate
-    # a possible stall, sample once per second until activity resumes or the
-    # historical ten-sample restart threshold is reached.
-    if [ $COUNTER_H -eq 0 ] && [ $COUNTER_L -eq 0 ]; then
-        sleep $INTERVAL
-    else
-        sleep 1
+    if [ "$POLICY_COUNTER" -eq 0 ]; then
+        check_local_services
+        "$YI_HACK_PREFIX/script/oom_policy.sh" >/dev/null 2>&1
     fi
+    POLICY_COUNTER=$(((POLICY_COUNTER+1)%3))
+    if [ "$COUNTER_H" -eq 0 ] && [ "$COUNTER_L" -eq 0 ]; then sleep "$INTERVAL"; else sleep 1; fi
 done

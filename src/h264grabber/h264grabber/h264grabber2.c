@@ -409,20 +409,20 @@ int main(int argc, char **argv) {
     // Opening/setting output file
     if (fifo == 0) {
         if (resolution == RESOLUTION_LOW) {
-            stdoutbuf = (char *) malloc(sizeof(char) * 256 * 1024);
-            if (setvbuf(stdout, stdoutbuf, _IOFBF, sizeof(stdoutbuf)) != 0) {
+            stdoutbuf = (char *) malloc(4096);
+            if (setvbuf(stdout, stdoutbuf, _IOFBF, 4096) != 0) {
                 fprintf(stderr, "Error setting stdout buffer\n");
             }
             fOutLow = stdout;
         } else if (resolution == RESOLUTION_HIGH) {
-            stdoutbuf = (char *) malloc(sizeof(char) * 256 * 1024);
-            if (setvbuf(stdout, stdoutbuf, _IOFBF, sizeof(stdoutbuf)) != 0) {
+            stdoutbuf = (char *) malloc(4096);
+            if (setvbuf(stdout, stdoutbuf, _IOFBF, 4096) != 0) {
                 fprintf(stderr, "Error setting stdout buffer\n");
             }
             fOutHigh = stdout;
         } else if (audio == 1) {
-            stdoutbuf = (char *) malloc(sizeof(char) * 32 * 1024);
-            if (setvbuf(stdout, stdoutbuf, _IOFBF, sizeof(stdoutbuf)) != 0) {
+            stdoutbuf = (char *) malloc(4096);
+            if (setvbuf(stdout, stdoutbuf, _IOFBF, 4096) != 0) {
                 fprintf(stderr, "Error setting stdout buffer\n");
             }
             fOutAac = stdout;

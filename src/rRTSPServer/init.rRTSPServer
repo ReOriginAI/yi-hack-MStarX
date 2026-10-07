@@ -54,6 +54,7 @@ tar zxvf $ARCHIVE
 
 patch -p0 < rRTSPServer.patch
 patch -p0 < friend.patch
+patch -p0 < backchannel.patch || exit 1
 
 cd live || exit 1
 

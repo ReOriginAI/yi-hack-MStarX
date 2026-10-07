@@ -1,0 +1,18 @@
+--- live.ori/liveMedia/RTSPServer.cpp
++++ live/liveMedia/RTSPServer.cpp
+@@ -1588,6 +1588,15 @@
+ 				    serverRTPPort, serverRTCPPort,
+ 				    fStreamStates[trackNum].streamToken);
+     
++    // A backchannel can fail to acquire its exclusive playback sink.
++    // Do not acknowledge SETUP for a stream that cannot receive any audio.
++    if (fStreamStates[trackNum].streamToken == NULL) {
++      snprintf((char*)fOurClientConnection->fResponseBuffer, sizeof fOurClientConnection->fResponseBuffer,
++               "RTSP/1.0 503 Service Unavailable\r\nCSeq: %s\r\nRetry-After: 1\r\n\r\n",
++               fOurClientConnection->fCurrentCSeq);
++      return;
++    }
++
+     AddressString destAddrStr(destinationAddress);
+     AddressString sourceAddrStr(sourceAddr);
+     char timeoutParameterString[100];

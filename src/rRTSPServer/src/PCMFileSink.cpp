@@ -27,10 +27,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include "SpeakerLock.hh"
 
 ////////// PCMFileSink //////////
 
 extern int debug;
+int yiSpeakerBusy = 0;
 
 // ulaw and alaw functions
 static int16_t linear16FromuLaw(unsigned char uLawByte) {
@@ -81,7 +83,7 @@ static int16_t alaw_decode[256] = {
     944, 912, 1008, 976, 816, 784, 880, 848
 };
 
-static u_int16_t linear16FromaLaw(unsigned char aLawByte) {
+static int16_t linear16FromaLaw(unsigned char aLawByte) {
     return alaw_decode[aLawByte];
 }
 
@@ -94,15 +96,17 @@ PCMFileSink::PCMFileSink(UsageEnvironment& env, FILE* fid,
     fPCMBuffer = new int16_t[bufferSize];
     fLastSample = 0;
     fOutputClosed = False;
+    fSpeakerLockFd = -1;
 }
 
 PCMFileSink::~PCMFileSink() {
+    if (fSpeakerLockFd >= 0) { ::close(fSpeakerLockFd); yiSpeakerBusy = 0; }
     delete[] fPCMBuffer;
 }
 
 PCMFileSink* PCMFileSink::createNew(UsageEnvironment& env,
                                     char const* fileName, int destSampleRate,
-                                    int srcLaw, unsigned bufferSize) {
+                                    int srcLaw, unsigned bufferSize, Boolean forSDP) {
 
     if ((destSampleRate != 8000) && (destSampleRate != 16000)) {
         fprintf(stderr, "PCMFileSink::createNew(): The sample rate is not supported\n");
@@ -110,15 +114,23 @@ PCMFileSink* PCMFileSink::createNew(UsageEnvironment& env,
     }
 
     do {
+        int speakerLock = forSDP ? -1 : acquireSpeakerLock();
+        if (!forSDP && speakerLock < 0) { env.setResultMsg("Speaker is busy"); return NULL; }
         FILE* fid;
-        fid = OpenOutputFile(env, fileName);
-        if (fid == NULL) break;
+        fid = forSDP ? fopen("/dev/null", "wb") : openSpeakerOutput(fileName);
+        if (fid == NULL) {
+            if (speakerLock >= 0) { ::close(speakerLock); yiSpeakerBusy = 0; }
+            env.setResultMsg("Speaker output is unavailable");
+            break;
+        }
 
         // Make writes to the output fifo non-blocking
         int fl = fcntl(fileno(fid), F_GETFL, 0);
         if (fl >= 0) fcntl(fileno(fid), F_SETFL, fl | O_NONBLOCK);
 
-        return new PCMFileSink(env, fid, destSampleRate, srcLaw, bufferSize);
+        PCMFileSink* sink = new PCMFileSink(env, fid, destSampleRate, srcLaw, bufferSize);
+        sink->fSpeakerLockFd = speakerLock;
+        return sink;
     } while (0);
 
     return NULL;

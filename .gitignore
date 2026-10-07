@@ -22,3 +22,6 @@ src/h264grabber/h264grabber/h264grabber
 src/h264grabber/h264grabber/h264grabber2
 src/ipc_cmd/ipc_cmd/ipc_cmd
 src/snapshot/snapshot/imggrabber
+
+src/ipc_cmd/ipc_cmd/rmm_optimizations.so
+src/onvif_simple_server/mbedtls-*.tar.bz2*

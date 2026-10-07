@@ -91,7 +91,7 @@ protected: // redefined virtual functions
 //  virtual FramedSource* getStreamSource(void* streamToken);
   virtual void getRTPSinkandRTCP(void* streamToken,
 				 RTPSink const*& rtpSink, RTCPInstance const*& rtcp);
-//  virtual void deleteStream(unsigned clientSessionId, void*& streamToken);
+  virtual void deleteStream(unsigned clientSessionId, void*& streamToken);
 
 protected: // new virtual functions, possibly redefined by subclasses
 //  virtual char const* getAuxSDPLine(RTPSink* rtpSink,
@@ -119,6 +119,7 @@ protected: // new virtual functions, defined by all subclasses
 //  virtual RTPSink* createNewRTPSink(Groupsock* rtpGroupsock,
 //				    unsigned char rtpPayloadTypeIfDynamic,
 //				    FramedSource* inputSource) = 0;
+  virtual MediaSink* createSDPStreamDestination(unsigned& estBitrate);
   virtual MediaSink* createNewStreamDestination(unsigned clientSessionId,
 		          unsigned& estBitrate);
       // "estBitrate" is the stream's estimated bitrate, in kbps

@@ -1,49 +1,105 @@
-diff -Naur onvif_simple_server.ori/onvif_notify_server.c onvif_simple_server/onvif_notify_server.c
---- onvif_simple_server.ori/onvif_notify_server.c	2025-05-20 16:04:41.566106647 +0200
-+++ onvif_simple_server/onvif_notify_server.c	2025-05-19 21:58:06.946512597 +0200
-@@ -40,11 +40,11 @@
- #include "log.h"
- #include "onvif_simple_server.h"
- 
+diff --git a/onvif_notify_server.c b/onvif_notify_server.c
+index 21ca517..9aa5406 100644
+--- a/onvif_notify_server.c
++++ b/onvif_notify_server.c
+@@ -40,0 +41 @@
++#include <sys/vfs.h>
+@@ -43,3 +44,3 @@
 -#define DEFAULT_CONF_FILE "/etc/onvif_simple_server.conf"
 -#define DEFAULT_JSON_CONF_FILE "/etc/onvif_simple_server.json"
 -#define DEFAULT_LOG_FILE "/var/log/onvif_notify_server.log"
 +#define DEFAULT_CONF_FILE "/tmp/onvif_simple_server.conf"
 +#define DEFAULT_JSON_CONF_FILE "/tmp/onvif_simple_server.json"
-+#define DEFAULT_LOG_FILE "/tmp/onvif_notify_server.log"
- #define DEFAULT_PID_FILE "/var/run/onvif_notify_server.pid"
++#define DEFAULT_LOG_FILE "/tmp/yi-service-logs/onvif_notify_server.log"
+@@ -47 +48 @@
 -#define DEFAULT_TEMPLATE_DIR "/etc/onvif_notify_server"
 +#define DEFAULT_TEMPLATE_DIR "/home/yi-hack/etc/onvif_notify_server"
- #define INOTIFY_DIR "/tmp/onvif_notify_server"
- 
- #define ALARM_OFF 0
-diff -Naur onvif_simple_server.ori/onvif_simple_server.c onvif_simple_server/onvif_simple_server.c
---- onvif_simple_server.ori/onvif_simple_server.c	2025-05-20 16:05:41.953491940 +0200
-+++ onvif_simple_server/onvif_simple_server.c	2025-05-19 22:11:39.609081482 +0200
-@@ -38,9 +38,9 @@
- #include "utils.h"
- #include "log.h"
- 
+@@ -571,0 +573,15 @@ void print_usage(char *progname)
++/* Refuse an uncapped fallback directory even when the mount helper fails.
++ * statfs reports total capacity, not current free space. */
++static FILE *open_bounded_log(void)
++{
++    struct statfs fs;
++    FILE *file = NULL;
++    if (statfs("/tmp/yi-service-logs", &fs) == 0 &&
++        fs.f_type == 0x01021994 && fs.f_blocks > 0 &&
++        (unsigned long long)fs.f_blocks * fs.f_bsize <= 128 * 1024 &&
++        fs.f_files <= 16) file = fopen(DEFAULT_LOG_FILE, "w");
++    if (file == NULL) file = fopen("/dev/null", "w");
++    if (file == NULL) exit(EXIT_FAILURE);
++    return file;
++}
++
+@@ -713 +729 @@ int main(int argc, char **argv)  {
+-    fLog = fopen(DEFAULT_LOG_FILE, "w");
++    fLog = open_bounded_log();
+diff --git a/onvif_simple_server.c b/onvif_simple_server.c
+index 75b3fcd..ebf367c 100644
+--- a/onvif_simple_server.c
++++ b/onvif_simple_server.c
+@@ -39,0 +40 @@
++#include <sys/vfs.h>
+@@ -41,3 +42,3 @@
 -#define DEFAULT_CONF_FILE "/etc/onvif_simple_server.conf"
 -#define DEFAULT_JSON_CONF_FILE "/etc/onvif_simple_server.json"
 -#define DEFAULT_LOG_FILE "/var/log/onvif_simple_server.log"
 +#define DEFAULT_CONF_FILE "/tmp/onvif_simple_server.conf"
 +#define DEFAULT_JSON_CONF_FILE "/tmp/onvif_simple_server.json"
-+#define DEFAULT_LOG_FILE "/tmp/onvif_simple_server.log"
- #define DEBUG_FILE "/tmp/onvif_simple_server.debug"
- 
- #define ROTATION_LOG_LENGTH 3
-diff -Naur onvif_simple_server.ori/wsd_simple_server.c onvif_simple_server/wsd_simple_server.c
---- onvif_simple_server.ori/wsd_simple_server.c	2025-05-20 16:06:31.857058818 +0200
-+++ onvif_simple_server/wsd_simple_server.c	2025-05-19 20:17:54.965288550 +0200
-@@ -42,8 +42,8 @@
- #define PORT 3702
- #define TYPE "NetworkVideoTransmitter"
- 
++#define DEFAULT_LOG_FILE "/tmp/yi-service-logs/onvif_simple_server.log"
+@@ -148,0 +150,15 @@ void print_usage(char *progname)
++/* Refuse an uncapped fallback directory even when the mount helper fails.
++ * statfs reports total capacity, not current free space. */
++static FILE *open_bounded_log(void)
++{
++    struct statfs fs;
++    FILE *file = NULL;
++    if (statfs("/tmp/yi-service-logs", &fs) == 0 &&
++        fs.f_type == 0x01021994 && fs.f_blocks > 0 &&
++        (unsigned long long)fs.f_blocks * fs.f_bsize <= 128 * 1024 &&
++        fs.f_files <= 16) file = fopen(DEFAULT_LOG_FILE, "w");
++    if (file == NULL) file = fopen("/dev/null", "w");
++    if (file == NULL) exit(EXIT_FAILURE);
++    return file;
++}
++
+@@ -165,3 +181,7 @@ int main(int argc, char ** argv)
+-    // Set default log file and conf file
+-    rotate_log();
+-    fLog = fopen(DEFAULT_LOG_FILE, "w");
++    // Rotation remains inside the capped mount. Failed mounts use /dev/null.
++    struct statfs logfs;
++    if (statfs("/tmp/yi-service-logs", &logfs) == 0 &&
++        logfs.f_type == 0x01021994 && logfs.f_blocks > 0 &&
++        (unsigned long long)logfs.f_blocks * logfs.f_bsize <= 128 * 1024 &&
++        logfs.f_files <= 16) rotate_log();
++    fLog = open_bounded_log();
+diff --git a/wsd_simple_server.c b/wsd_simple_server.c
+index 84dd51a..7ac4acb 100644
+--- a/wsd_simple_server.c
++++ b/wsd_simple_server.c
+@@ -37,0 +38 @@
++#include <sys/vfs.h>
+@@ -45,2 +46,2 @@
 -#define DEFAULT_LOG_FILE     "/var/log/wsd_simple_server.log"
 -#define DEFAULT_TEMPLATE_DIR "/etc/wsd_simple_server"
-+#define DEFAULT_LOG_FILE "/tmp/wsd_simple_server.log"
++#define DEFAULT_LOG_FILE     "/tmp/yi-service-logs/wsd_simple_server.log"
 +#define DEFAULT_TEMPLATE_DIR "/home/yi-hack/etc/wsd_simple_server"
- 
- #define RECV_BUFFER_LEN 4096
- 
+@@ -291,0 +293,15 @@ static void handle_probe(int s, struct sockaddr *dst, socklen_t dst_len,
++/* Refuse an uncapped fallback directory even when the mount helper fails.
++ * statfs reports total capacity, not current free space. */
++static FILE *open_bounded_log(void)
++{
++    struct statfs fs;
++    FILE *file = NULL;
++    if (statfs("/tmp/yi-service-logs", &fs) == 0 &&
++        fs.f_type == 0x01021994 && fs.f_blocks > 0 &&
++        (unsigned long long)fs.f_blocks * fs.f_bsize <= 128 * 1024 &&
++        fs.f_files <= 16) file = fopen(DEFAULT_LOG_FILE, "w");
++    if (file == NULL) file = fopen("/dev/null", "w");
++    if (file == NULL) exit(EXIT_FAILURE);
++    return file;
++}
++
+@@ -374 +390 @@ int main(int argc, char **argv)
+-    fLog = fopen(DEFAULT_LOG_FILE, "w");
++    fLog = open_bounded_log();

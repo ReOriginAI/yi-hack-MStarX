@@ -230,7 +230,7 @@ echo "done!"
 #echo "done!"
 
 # strip rootfs content
-export STRIP=/opt/yi/arm-linux-gnueabihf-4.8.3-201404/bin/arm-linux-gnueabihf-strip
+export STRIP=${STRIP:-arm-linux-gnueabihf-strip}
 $STRIP $TMP_DIR/rootfs/ext/bin/iwconfig
 
 # home
@@ -241,9 +241,24 @@ mv $OUT_DIR/home_$CAMERA_ID.jffs2 $OUT_DIR/home_$CAMERA_ID
 pack_image "rootfs" $CAMERA_ID $TMP_DIR $OUT_DIR
 mv $OUT_DIR/rootfs_$CAMERA_ID.jffs2 $OUT_DIR/sys_$CAMERA_ID
 
+# Refuse an image that cannot fit the Y23 flash partitions.
+if [[ "$CAMERA_ID" == y23 ]]; then
+    [[ $(wc -c < "$OUT_DIR/sys_$CAMERA_ID") -le 1966080 ]] &&
+    [[ $(wc -c < "$OUT_DIR/home_$CAMERA_ID") -le 12779520 ]] || {
+        echo "ERROR: Y23 image exceeds its flash partition."
+        exit 1
+    }
+fi
+
 # create tar.gz
 rm -f $OUT_DIR/*.tgz
 tar zcvf $OUT_DIR/${CAMERA_NAME}_${VER}.tgz -C $OUT_DIR sys_$CAMERA_ID home_$CAMERA_ID
+
+# Offline speech and voice data belong on SD, outside the small /home flash image.
+if [ -d "$BUILD_DIR/sd/yi-hack" ]; then
+    tar zcf "$OUT_DIR/${CAMERA_NAME}_${VER}_sd.tgz" -C "$BUILD_DIR/sd" yi-hack
+fi
+(cd "$OUT_DIR" && sha256sum "${CAMERA_NAME}_${VER}"*.tgz > "${CAMERA_NAME}_${VER}.sha256")
 
 # Cleanup
 echo -n ">>> Cleaning up the tmp folder... "
@@ -253,4 +268,3 @@ echo "done!"
 echo "------------------------------------------------------------------------"
 echo " Finished!"
 echo "------------------------------------------------------------------------"
-

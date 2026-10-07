@@ -1,5 +1,12 @@
 # MStarX Future Optimization Roadmap
 
+**Implementation update (2026-10-06):** portable storage, lifecycle/OOM,
+speaker/TTS, Wi-Fi recovery and upgrade hardening now have tracked source
+and verification. See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for the implementation
+record, measured limits and outstanding hardware validation. The estimates and
+vendor proposals below remain historical planning material. The new go2rtc build
+and package are excluded at the user's request; standard RTSP remains the default.
+
 This document is a **forward-looking plan** for `yi-hack-MStarX`, with the Y23 platform as the first validation target. Nothing in the roadmap should be treated as implemented until it is represented in tracked source/build/install code and verified on hardware.
 
 The roadmap is based on the 28 fork-only commits in `ReOriginAI/yi-hack-Allwinner-v2X` (`upstream/master..master`, reviewed 2026-09-17). The goal is to port the *optimization strategy*, not blindly copy Allwinner-specific patches or binary offsets.

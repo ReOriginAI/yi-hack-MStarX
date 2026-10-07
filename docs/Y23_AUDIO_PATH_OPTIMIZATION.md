@@ -1,5 +1,11 @@
 # Y23 Audio-Path Optimization Notes
 
+> Current implementation/verification: [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
+> The default is now `RTSP_AUDIO=no`; standard talkback has native clock,
+> discovery, ownership and cleanup fixes verified with SD PCM capture/silent
+> FIFO tests on 2026-10-06. Physical acoustics and TinyALSA idle CPU savings remain
+> unverified. Historical vendor/AEC proposals below are not completed changes.
+
 > Working notes for resource reduction in the retained local Y23 audio path. Changes in this file are not considered validated until a rebuilt firmware is tested on hardware.
 
 ## Current target
@@ -37,16 +43,17 @@ Do not assign a CPU or RAM saving until measured on the camera.
 
 ## Configuration inconsistency found
 
-The shipped `system.conf` and `check_conf.sh` defaults currently contain:
+The older audio inspection found `RTSP_AUDIO=yes`, while the shipped
+`system.conf` and `check_conf.sh` defaults now contain:
 
 ```text
-RTSP_AUDIO=yes
+RTSP_AUDIO=no
 SPEAKER_AUDIO=yes
 ```
 
 while the WebUI presents `RTSP_AUDIO=no` as `Disabled (default)` and the RTSP service has explicit codec handling for `no`, `pcm`, `alaw`, `ulaw`, and `aac` rather than `yes`.
 
-This should be normalized, but it is a behavior/default migration decision rather than part of the TinyALSA FIFO fix. In particular, `SPEAKER_AUDIO` also supports the speaker/TTS endpoint, so changing it blindly could disable a feature that currently relies on `/tmp/audio_in_fifo` existing from boot.
+The RTSP default has been normalized to `no`, independently of the TinyALSA FIFO fix. In particular, `SPEAKER_AUDIO` also supports the speaker/TTS endpoint, so changing it blindly could disable a feature that currently relies on `/tmp/audio_in_fifo` existing from boot.
 
 ## Live validation plan
 

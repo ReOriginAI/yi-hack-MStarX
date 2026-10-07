@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-	<a target="_blank" href="https://github.com/roleoroleo/yi-hack-MStar/releases">
+	<a target="_blank" href="https://github.com/ReOriginAI/yi-hack-MStarX/releases">
 		<img src="https://img.shields.io/github/downloads/roleoroleo/yi-hack-MStar/total.svg" alt="Releases Downloads">
 	</a>
 </p>
@@ -36,10 +36,18 @@ I have no time to support the project, so feel free to clone/fork this git and m
 
 ## Installation
 
+
+This fork builds Y23 firmware. See [implemented improvements and verification](docs/OPTIMIZATIONS.md).
+The optional `y23_VERSION_sd.tgz` companion supplies offline speech and voice data;
+verify the release checksum manifest and extract it to the mounted SD root so
+its contents land under `yi-hack/`. Keep the companion out of internal flash.
+Configuration backups now use `config.tar.bz2`; make a fresh backup before
+upgrading, because older `.7z` backups require the older restore tool.
+
 ### Install Procedure
 1. Check if your cam is supported in the "Supported cameras" section and note the file prefix.
 2. Format an SD Card as FAT32. It's recommended to format the card in the camera using the camera's native format function. If the card is already formatted, remove all the files.
-3. Download the latest release from [the Releases page](https://github.com/roleoroleo/yi-hack-MStar/releases) based on the file prefix.
+3. Download the latest release from [the Releases page](https://github.com/ReOriginAI/yi-hack-MStarX/releases) based on the file prefix.
 4. Extract the contents of the archive to the root of your SD card (home_y23 and sys_y23).
 5. Insert the SD Card and reboot the camera.
 6. The yellow light will come ON and flash for roughly 30 seconds, which means the firmware is being flashed successfully. The camera will boot up.

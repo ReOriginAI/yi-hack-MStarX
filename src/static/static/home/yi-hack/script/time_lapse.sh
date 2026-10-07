@@ -1,7 +1,8 @@
 #!/bin/ash
 CONF_FILE="etc/system.conf"
 
-YI_HACK_PREFIX="/home/yi-hack"
+YI_HACK_PREFIX=${YI_HACK_PREFIX:-/home/yi-hack}
+. "$YI_HACK_PREFIX/script/runtime.sh"
 
 MODEL_SUFFIX=$(cat $YI_HACK_PREFIX/model_suffix)
 HOMEVER=$(cat /home/homever)
@@ -12,6 +13,7 @@ get_config()
     key=$1
     grep -w $1 $YI_HACK_PREFIX/$CONF_FILE | cut -d "=" -f2-
 }
+sd_available || exit 1
 # Setup env.
 export PATH=$PATH:/home/base/tools:/home/yi-hack/bin:/home/yi-hack/sbin:/tmp/sd/yi-hack/bin:/tmp/sd/yi-hack/sbin
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/lib:/home/yi-hack/lib:/tmp/sd/yi-hack/lib
@@ -37,12 +39,7 @@ lbasename ()
 
 logAdd ()
 {
-    TMP_DATETIME="$(date '+%Y-%m-%d [%H-%M-%S]')"
-    TMP_LOGSTREAM="$(tail -n ${LOG_MAX_LINES} ${LOGFILE} 2>/dev/null)"
-    echo "${TMP_LOGSTREAM}" > "$LOGFILE"
-    echo "${TMP_DATETIME} $*" >> "${LOGFILE}"
-    echo "${TMP_DATETIME} $*"
-    return 0
+    "$YI_HACK_PREFIX/script/bounded_log.sh" "$LOGFILE" "$(date) $*"
 }
 
 

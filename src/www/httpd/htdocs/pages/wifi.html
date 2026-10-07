@@ -67,5 +67,17 @@
             <div class="padded-right save-text" id="save-wifi-status"></div>
             <input class="button-primary" type="button" id="button-save-wifi" value="Save Configuration"/>
         </div>
+        <div class="twelve columns">
+            <hr/>
+            <h4>Maintenance network</h4>
+            <p>Optional fallback after repeated connection failures. Keep this network available for recovery; it is disabled by default.</p>
+            <label><input type="checkbox" id="WIFI_MAINTENANCE_ENABLED"/> Enable maintenance network</label>
+            <label for="WIFI_MAINTENANCE_SSID">Network name</label>
+            <input class="u-full-width" type="text" id="WIFI_MAINTENANCE_SSID" maxlength="32"/>
+            <label for="WIFI_MAINTENANCE_PASSWORD">Password (8–63 bytes)</label>
+            <input class="u-full-width" type="password" id="WIFI_MAINTENANCE_PASSWORD" maxlength="63"/>
+            <span id="save-maintenance-status" role="status"></span>
+            <input class="button-primary" type="button" id="button-save-maintenance" value="Save Maintenance Network"/>
+        </div>
     </div>
 </div>

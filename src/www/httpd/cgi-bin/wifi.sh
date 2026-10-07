@@ -1,94 +1,23 @@
 #!/bin/sh
-
-removedoublequotes(){
-  echo "$(sed 's/^"//g;s/"$//g')"
-}
-
-YI_HACK_PREFIX="/home/yi-hack"
-
-. $YI_HACK_PREFIX/www/cgi-bin/validate.sh
-
-if ! $(validateQueryString $QUERY_STRING); then
-    printf "Content-type: application/json\r\n\r\n"
-    printf "{\n"
-    printf "\"%s\":\"%s\"\\n" "error" "true"
-    printf "}"
-    exit
-fi
-
-ACTION="none"
-
-PARAM="$(echo $QUERY_STRING | cut -d'=' -f1)"
-VAL="$(echo $QUERY_STRING | cut -d'=' -f2)"
-PWD=""
-PWD2=""
-
-if [ "$PARAM" == "action" ]; then
-     ACTION=$VAL
-fi
-
-if [ $ACTION == "scan" ]; then
-
-    printf "Content-type: application/json\r\n\r\n"
-    printf "{\"wifi\":[\n"
-
-    LIST=`$YI_HACK_PREFIX/bin/iwlist wlan0 scan | grep "ESSID:" | sed 's/^[ \t]*ESSID://g' | grep -v -e '^$'`
-
-    IFS="\""
-    for l in $LIST; do
-        if [ ! -z $(echo $l | tr -d ' ') ]; then
-            printf "\"$l\", \n"
-        fi
-    done
-
-    printf "\"\"]}\n"
-
-elif [ $ACTION == "save" ]; then
-
-    read -r POST_DATA
-    rm -f /tmp/configure_wifi.cfg
-
-    # Validate json
-    VALID=$(echo "$POST_DATA" | jq -e . >/dev/null 2>&1; echo $?)
-    if [ "$VALID" != "0" ]; then
-        printf "Content-type: application/json\r\n\r\n"
-        printf "{\n"
-        printf "\"%s\":\"%s\"\\n" "error" "true"
-        printf "}"
-        exit
-    fi
-    KEYS=$(echo "$POST_DATA" | jq keys_unsorted[])
-    for KEY in $KEYS; do
-        KEY=$(echo $KEY | removedoublequotes)
-        VALUE=$(echo "$POST_DATA" | jq -r .$KEY)
-        if [ $KEY == "WIFI_ESSID" ]; then
-            KEY="wifi_ssid"
-            echo "$KEY=$VALUE" >> /tmp/configure_wifi.cfg
-        elif [ $KEY == "WIFI_PASSWORD" ]; then
-            PWD=$VALUE
-            KEY="wifi_psk"
-            echo "$KEY=$VALUE" >> /tmp/configure_wifi.cfg
-        elif [ $KEY == "WIFI_PASSWORD2" ]; then
-            PWD2=$VALUE
-        fi
-    done
-
-    if [ "$PWD" == "$PWD2" ]; then
-        $YI_HACK_PREFIX/script/configure_wifi.sh
-        sleep 1
-        rm -f /tmp/configure_wifi.cfg
-
-        printf "Content-type: application/json\r\n\r\n"
-        printf "{\n"
-        printf "\"%s\":\"%s\"\\n" "error" "false"
-        printf "}"
-    else
-        rm -f /tmp/configure_wifi.cfg
-
-        printf "Content-type: application/json\r\n\r\n"
-        printf "{\n"
-        printf "\"%s\":\"%s\"\\n" "error" "true"
-        printf "}"
-    fi
-
-fi
+YI_HACK_PREFIX=${YI_HACK_PREFIX:-/home/yi-hack}
+. "$YI_HACK_PREFIX/script/config_work.sh"
+. "$YI_HACK_PREFIX/script/upload.sh"
+fail() { printf 'Content-type: application/json\r\n\r\n{"error":true}\n'; exit 1; }
+case "${QUERY_STRING:-}" in
+    action=scan)
+        printf 'Content-type: application/json\r\n\r\n'
+        "$YI_HACK_PREFIX/bin/iwlist" wlan0 scan | sed -n 's/.*ESSID:"\(.*\)"/\1/p' | jq -R -s '{wifi: (split("\n") | map(select(length>0)))}'
+        ;;
+    action=save)
+        config_work_begin || fail
+        upload_read 4096 "$CONFIG_WORK/body" || fail
+        jq -e '(.WIFI_ESSID | type=="string") and (.WIFI_PASSWORD | type=="string") and
+            (.WIFI_PASSWORD==.WIFI_PASSWORD2) and
+            all(.WIFI_ESSID,.WIFI_PASSWORD; test("[\u0000-\u001f]") | not)' "$CONFIG_WORK/body" >/dev/null 2>&1 || fail
+        { printf 'wifi_ssid='; jq -r '.WIFI_ESSID' "$CONFIG_WORK/body";
+          printf 'wifi_psk='; jq -r '.WIFI_PASSWORD' "$CONFIG_WORK/body"; } > "$CONFIG_WORK/wifi.cfg"
+        CFG_FILE="$CONFIG_WORK/wifi.cfg" "$YI_HACK_PREFIX/script/configure_wifi.sh" >/dev/null 2>&1 || fail
+        printf 'Content-type: application/json\r\n\r\n{"error":false}\n'
+        ;;
+    *) fail ;;
+esac

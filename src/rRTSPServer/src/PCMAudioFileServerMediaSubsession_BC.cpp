@@ -38,7 +38,7 @@ PCMAudioFileServerMediaSubsession_BC
                                        int sampleRate, int numChannels, int law)
   : FileServerMediaSubsession_BC(env, fileName, reuseFirstSource),
     fSampleRate(sampleRate), fNumChannels(numChannels), fLaw(law),
-    fAuxSDPLine(NULL), fRTPTimestampFrequency(sampleRate) {
+    fAuxSDPLine(NULL), fRTPTimestampFrequency(8000) {
 }
 
 PCMAudioFileServerMediaSubsession_BC
@@ -47,9 +47,14 @@ PCMAudioFileServerMediaSubsession_BC
 
 MediaSink* PCMAudioFileServerMediaSubsession_BC
 ::createNewStreamDestination(unsigned clientSessionId, unsigned& estBitrate) {
-    estBitrate = 8; // kbps, estimate
+    estBitrate = 64; // G711 is 8-bit, 8 kHz mono on the network
 
     return PCMFileSink::createNew(envir(), fFileName, fSampleRate, fLaw);
+}
+
+MediaSink* PCMAudioFileServerMediaSubsession_BC::createSDPStreamDestination(unsigned& estBitrate) {
+    estBitrate = 64;
+    return PCMFileSink::createNew(envir(), fFileName, fSampleRate, fLaw, 8192, True);
 }
 
 RTPSource* PCMAudioFileServerMediaSubsession_BC

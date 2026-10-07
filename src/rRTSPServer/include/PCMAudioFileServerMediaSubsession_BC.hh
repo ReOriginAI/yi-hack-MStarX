@@ -46,6 +46,7 @@ protected: // redefined virtual functions
 				      unsigned char rtpPayloadTypeIfDynamic,
 				      FramedSource* inputSource);
 
+    virtual MediaSink* createSDPStreamDestination(unsigned& estBitrate);
     virtual MediaSink* createNewStreamDestination(unsigned clientSessionId,
 						  unsigned& estBitrate);
     // "estBitrate" is the stream's estimated bitrate, in kbps

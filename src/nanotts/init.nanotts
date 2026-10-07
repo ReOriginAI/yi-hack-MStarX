@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+COMMIT=d8b91f3d9d524c30f6fe8098ea7a0a638c889cf9
+SOURCE_SHA256=184aa6e0932ce3a7570a7a2473823fab6f4de7e7cdf01771707060c08a433aaa
+mkdir -p _build
+if [ ! -f _build/source.tar.gz ]; then
+    curl --fail --location --retry 3 "https://codeload.github.com/gmn/nanotts/tar.gz/$COMMIT" -o _build/source.tar.gz
+fi
+echo "$SOURCE_SHA256  _build/source.tar.gz" | sha256sum -c -
+rm -rf _build/source _install
+mkdir _build/source
+tar xzf _build/source.tar.gz --strip-components=1 -C _build/source
+
+# Do not accidentally embed the parent MStar checkout's git status/date.
+cat > _build/source/build_version.h <<'EOF'
+#define GIT_TIP_VERSION "d8b91f3d9d524c30f6fe8098ea7a0a638c889cf9"
+#define GIT_TIP_DATE "pinned source"
+#define GIT_TIP_MSG "MStar build"
+EOF
+printf '#!/bin/sh\nexit 0\n' > _build/source/update_build_version.sh

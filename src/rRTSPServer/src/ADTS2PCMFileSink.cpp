@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include "SpeakerLock.hh"
 
 ////////// ADTS2PCMFileSink //////////
 
@@ -43,7 +44,7 @@ ADTS2PCMFileSink::ADTS2PCMFileSink(UsageEnvironment& env, FILE* fid,
                                    int sampleRate, int numChannels,
                                    unsigned bufferSize)
     : FileSink(env, fid, bufferSize, NULL), fSampleRate(sampleRate),
-      fNumChannels(numChannels), fPacketCounter(0), fOutputClosed(False) {
+      fNumChannels(numChannels), fPacketCounter(0), fOutputClosed(False), fSpeakerLockFd(-1) {
 
     int i;
     for (i = 0; i < 16; i++) {
@@ -72,23 +73,31 @@ ADTS2PCMFileSink::ADTS2PCMFileSink(UsageEnvironment& env, FILE* fid,
 }
 
 ADTS2PCMFileSink::~ADTS2PCMFileSink() {
+    if (fSpeakerLockFd >= 0) { ::close(fSpeakerLockFd); yiSpeakerBusy = 0; }
     if (fAACHandle != NULL) aacDecoder_Close(fAACHandle);
 }
 
 ADTS2PCMFileSink* ADTS2PCMFileSink::createNew(UsageEnvironment& env,
                                               char const* fileName,
                                               int sampleRate, int numChannels,
-                                              unsigned bufferSize) {
+                                              unsigned bufferSize, Boolean forSDP) {
     do {
+        int speakerLock = forSDP ? -1 : acquireSpeakerLock();
+        if (!forSDP && speakerLock < 0) { env.setResultMsg("Speaker is busy"); return NULL; }
         FILE* fid;
-        fid = OpenOutputFile(env, fileName);
-        if (fid == NULL) break;
+        fid = forSDP ? fopen("/dev/null", "wb") : openSpeakerOutput(fileName);
+        if (fid == NULL) {
+            if (speakerLock >= 0) { ::close(speakerLock); yiSpeakerBusy = 0; }
+            env.setResultMsg("Speaker output is unavailable");
+            break;
+        }
 
         // Make writes to the output fifo non-blocking
         int fl = fcntl(fileno(fid), F_GETFL, 0);
         if (fl >= 0) fcntl(fileno(fid), F_SETFL, fl | O_NONBLOCK);
 
         ADTS2PCMFileSink* newSink = new ADTS2PCMFileSink(env, fid, sampleRate, numChannels, bufferSize);
+        newSink->fSpeakerLockFd = speakerLock;
         if (newSink->fAACHandle == NULL) {
             // The AAC decoder could not be opened
             fprintf(stderr, "ADTS2PCMFileSink::createNew(): AAC decoder unavailable\n");

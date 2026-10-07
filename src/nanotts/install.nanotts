@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+# Voice data is several MiB; package it with the optional SD payload.
+mkdir -p ../../build/sd/yi-hack
+rsync -a _install/ ../../build/sd/yi-hack/

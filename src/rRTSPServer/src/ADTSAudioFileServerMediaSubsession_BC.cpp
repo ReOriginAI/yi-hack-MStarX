@@ -54,6 +54,11 @@ MediaSink* ADTSAudioFileServerMediaSubsession_BC
     return ADTS2PCMFileSink::createNew(envir(), fFileName, fSampleRate, fNumChannels);
 }
 
+MediaSink* ADTSAudioFileServerMediaSubsession_BC::createSDPStreamDestination(unsigned& estBitrate) {
+    estBitrate = 8;
+    return ADTS2PCMFileSink::createNew(envir(), fFileName, fSampleRate, fNumChannels, 1024, True);
+}
+
 RTPSource* ADTSAudioFileServerMediaSubsession_BC
 ::createNewRTPSource(Groupsock* rtpGroupsock,
                      unsigned char rtpPayloadTypeIfDynamic,

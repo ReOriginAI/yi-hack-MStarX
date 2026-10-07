@@ -4,6 +4,13 @@ SYSTEM_CONF_FILE="/home/yi-hack/etc/system.conf"
 CAMERA_CONF_FILE="/home/yi-hack/etc/camera.conf"
 MQTTV4_CONF_FILE="/home/yi-hack/etc/mqttv4.conf"
 
+# Preserve upgraded cameras' existing talkback setting.
+if ! grep -q '^RTSP_BACKCHANNEL=' "$SYSTEM_CONF_FILE"; then
+    LEGACY_BC=$(grep -m 1 '^ONVIF_AUDIO_BC=' "$SYSTEM_CONF_FILE" | cut -d= -f2-)
+    case "$LEGACY_BC" in G711|g711|ulaw) LEGACY_BC=G711 ;; AAC|aac) LEGACY_BC=AAC ;; *) LEGACY_BC=NONE ;; esac
+    printf 'RTSP_BACKCHANNEL=%s\n' "$LEGACY_BC" >> "$SYSTEM_CONF_FILE"
+fi
+
 PARMS1="
 HTTPD=yes
 TELNETD=yes
@@ -34,6 +41,10 @@ ONVIF_WSDD=yes
 ONVIF_PROFILE=high
 ONVIF_WM_SNAPSHOT=yes
 ONVIF_AUDIO_BC=NONE
+RTSP_BACKCHANNEL=NONE
+WIFI_MAINTENANCE_ENABLED=no
+WIFI_MAINTENANCE_SSID=
+WIFI_MAINTENANCE_PASSWORD=
 ONVIF_ENABLE_MEDIA2=no
 ONVIF_FAULT_IF_UNKNOWN=no
 ONVIF_FAULT_IF_SET=no

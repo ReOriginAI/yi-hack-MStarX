@@ -32,7 +32,7 @@ class PCMFileSink: public FileSink {
 public:
     static PCMFileSink* createNew(UsageEnvironment& env, char const* fileName,
                                   int destSampleRate, int srcLaw,
-                                  unsigned bufferSize = 8192);
+                                  unsigned bufferSize = 8192, Boolean forSDP = False);
     // "bufferSize" should be at least as large as the largest expected
     //   input frame.
 
@@ -63,6 +63,7 @@ protected:
     int16_t *fPCMBuffer;
     int16_t fLastSample;
     Boolean fOutputClosed;
+    int fSpeakerLockFd;
 
     // Best-effort non-blocking write to the output fifo (drops on full pipe).
     void writeNonBlocking(void const* buf, unsigned nbytes);

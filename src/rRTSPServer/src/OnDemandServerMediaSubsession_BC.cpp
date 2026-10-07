@@ -28,7 +28,7 @@ OnDemandServerMediaSubsession_BC
 				   Boolean multiplexRTCPWithRTP)
     : ServerMediaSubsession(env),
       fSDPLines(NULL), fMIKEYStateMessage(NULL), fMIKEYStateMessageSize(0),
-      fReuseFirstSource(reuseFirstSource),
+      fReuseFirstSource(False), // A speaker stream belongs to exactly one client.
       fMultiplexRTCPWithRTP(multiplexRTCPWithRTP), fLastStreamToken(NULL),
       fAppHandlerTask(NULL), fAppHandlerClientData(NULL) {
 
@@ -63,7 +63,7 @@ char const* OnDemandServerMediaSubsession_BC::sdpLines(int addressFamily) {
 
         // The file sink should bind to specific type
         // We can know the type once we invoke the createNewStreamDestination() implemented by descendant
-        MediaSink* mediaSink = createNewStreamDestination(0, estBitrate);
+        MediaSink* mediaSink = createSDPStreamDestination(estBitrate);
         if (mediaSink == NULL) return NULL; // file not found
 
         Groupsock* dummyGroupsock = createGroupsock(nullAddress(addressFamily), 0);
@@ -115,6 +115,7 @@ void OnDemandServerMediaSubsession_BC
         unsigned streamBitrate = 0;
         MediaSink* mediaSink = NULL;
         mediaSink = createNewStreamDestination(clientSessionId, streamBitrate);
+        if (mediaSink == NULL) { streamToken = NULL; return; }
         Groupsock* rtpGroupsock = NULL;
         Groupsock* rtcpGroupsock = NULL;
         RTPSource* rtpSource = NULL;
@@ -236,6 +237,20 @@ void OnDemandServerMediaSubsession_BC::pauseStream(unsigned /*clientSessionId*/,
     if (streamState != NULL) streamState->pause();
 }
 
+void OnDemandServerMediaSubsession_BC::deleteStream(unsigned clientSessionId,
+                                                     void*& streamToken) {
+    Destinations* destinations = (Destinations*)
+        fDestinationsHashTable->Lookup((char const*)clientSessionId);
+    if (destinations != NULL) {
+        fDestinationsHashTable->Remove((char const*)clientSessionId);
+        delete destinations;
+    }
+    StreamState_BC* streamState = (StreamState_BC*)streamToken;
+    if (streamState != NULL && --streamState->referenceCount() == 0)
+        delete streamState; // Closes sink, RTP/RTCP and releases the speaker lock.
+    streamToken = NULL;
+}
+
 MediaSink* OnDemandServerMediaSubsession_BC::getStreamSink(void* streamToken) {
 
     if (streamToken == NULL) return NULL;
@@ -334,6 +349,12 @@ char* OnDemandServerMediaSubsession_BC::getRtpMapLine(RTPSource* rtpSource) cons
 
     // assume numChannels = 1;
     int vNumChannels=1;
+    if (rtpSource->rtpPayloadFormat() == 0 || rtpSource->rtpPayloadFormat() == 8) {
+        char line[64];
+        sprintf(line, "a=rtpmap:%u %s/8000\r\n", rtpSource->rtpPayloadFormat(),
+                rtpSource->rtpPayloadFormat() == 0 ? "PCMU" : "PCMA");
+        return strDup(line);
+    }
     if (rtpSource->rtpPayloadFormat() >= 96) { // the payload format type is dynamic
         char* encodingParamsPart;
         if (vNumChannels != 1) {
@@ -414,6 +435,10 @@ void OnDemandServerMediaSubsession_BC
 
     fSDPLines = strDup(sdpLines);
     delete[] sdpLines;  
+}
+
+MediaSink* OnDemandServerMediaSubsession_BC::createSDPStreamDestination(unsigned& estBitrate) {
+    return createNewStreamDestination(0, estBitrate);
 }
 
 MediaSink* OnDemandServerMediaSubsession_BC::createNewStreamDestination(unsigned clientSessionId,

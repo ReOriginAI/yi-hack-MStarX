@@ -12,7 +12,7 @@ if [ "$MODEL_SUFFIX" == "h201c" ] || [ "$MODEL_SUFFIX" == "h305r" ] || [ "$MODEL
 else
     PTZ="no"
 fi
-if [ -f /tmp/sd/yi-hack/bin/go2rtc ]; then
+if [ -x /home/yi-hack/bin/go2rtc ] || [ -x /tmp/sd/yi-hack/bin/go2rtc ]; then
     GO2RTC="yes"
 else
     GO2RTC="no"

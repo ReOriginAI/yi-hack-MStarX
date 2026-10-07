@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+cd _build/source/svoxpico
+./autogen.sh
+CC=arm-linux-gnueabihf-gcc CFLAGS=-Os ./configure --host=arm-linux-gnueabihf --disable-shared --enable-static
+make -j "$(nproc)" libttspico.la
+cd ..
+make -j "$(nproc)" noalsa CC=arm-linux-gnueabihf-gcc CXX=arm-linux-gnueabihf-g++ CFLAGS='-Os -std=gnu++11' CFLAGS_OPT=-Os LINKER_FLAGS='-lm -static-libstdc++ -static-libgcc'
+mkdir -p ../../_install/bin ../../_install/usr/share/pico/lang
+cp nanotts ../../_install/bin/
+arm-linux-gnueabihf-strip ../../_install/bin/nanotts
+cp lang/*.bin ../../_install/usr/share/pico/lang/
+cp COPYING ../../_install/usr/share/pico/ 2>/dev/null || cp svoxpico/NOTICE ../../_install/usr/share/pico/

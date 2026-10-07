@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 
 static int (*original_pthread_create)(pthread_t *, const pthread_attr_t *,
                                       void *(*)(void *), void *);
@@ -24,8 +27,22 @@ static bool environment_enabled(const char *name) {
            strcmp(value, "no") != 0;
 }
 
+/* Optional debug output must not grow with thread churn. Separate opens
+ * make flock serialize even threads in this process; skip a busy logger. */
+static FILE *open_debug_log(void) {
+    int fd = open("/tmp/rmm_optimizations.log", O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW, 0600);
+    struct stat st;
+    FILE *file;
+    if (fd < 0) return NULL;
+    if (flock(fd, LOCK_EX|LOCK_NB) || fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
+    if (st.st_size > 65000 && ftruncate(fd, 0)) { close(fd); return NULL; }
+    file = fdopen(fd, "a");
+    if (!file) close(fd);
+    return file;
+}
+
 static void append_thread_map(long tid, void *(*start_routine)(void *)) {
-    FILE *debug_file = fopen("/tmp/rmm_optimizations.log", "a");
+    FILE *debug_file = open_debug_log();
 
     if (debug_file != NULL) {
         fprintf(debug_file, "thread_start tid=%ld start=%p\n", tid,
@@ -49,7 +66,7 @@ static void *mapped_thread_trampoline(void *opaque) {
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                    void *(*start_routine)(void *), void *arg) {
     if (environment_enabled(ENV_RMM_OPTIMIZATIONS_DEBUG)) {
-        FILE *debug_file = fopen("/tmp/rmm_optimizations.log", "a");
+        FILE *debug_file = open_debug_log();
 
         if (debug_file != NULL) {
             fprintf(debug_file, "pthread_create start=%p\n", start_routine);

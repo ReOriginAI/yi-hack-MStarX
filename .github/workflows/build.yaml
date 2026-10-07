@@ -32,7 +32,7 @@ jobs:
           # Ubuntu's lib32 compatibility packages provide the runtime it needs.
           sudo apt-get update
           sudo apt-get install -y \
-            git curl unzip build-essential cmake libtool \
+            git curl unzip build-essential cmake libtool busybox jq \
             bison bisonc++ libbison-dev autoconf autotools-dev automake \
             libssl-dev zlib1g-dev libzzip-dev flex libfl-dev \
             yui-compressor closure-compiler optipng jpegoptim \
@@ -127,6 +127,18 @@ jobs:
           # supplied through the two repository secrets above instead.
           sudo rm -rf sysroot/y23/home/yi-hack
 
+      - name: Verify portable runtime changes
+        run: |
+          set -euo pipefail
+          find src/static/static/home/yi-hack/script src/www/httpd/cgi-bin -maxdepth 1 -name '*.sh' -exec busybox ash -n {} \;
+          python3 scripts/tests/test_archives.py
+          python3 scripts/tests/test_storage.py
+          python3 scripts/tests/test_config_api.py
+          python3 scripts/tests/test_platform_scripts.py
+          python3 scripts/tests/test_speaker.py
+          python3 scripts/tests/test_rtsp_sink.py
+          python3 scripts/tests/test_lifecycle.py
+
       - name: Build firmware payload
         run: |
           set -euo pipefail
@@ -184,6 +196,22 @@ jobs:
           echo "Packed version: $(cat "$version_file")"
           test "$(cat "$version_file")" = "$version"
           test -f "$hack_root/script/wd.sh"
+          for script in runtime log_store bounded_log config_work restore_config restore_upgrade upload audio_work firmware_check oom_policy wifi_failover; do
+            test -x "$hack_root/script/$script.sh"
+          done
+          test -x "$hack_root/bin/archive_check"
+          test -x "$hack_root/bin/speaker"
+          test ! -e "$hack_root/bin/go2rtc"
+          grep -q '^RTSP_BACKCHANNEL=NONE$' "$hack_root/etc/system.conf"
+          grep -q 'ReOriginAI/yi-hack-MStarX' "$hack_root/www/cgi-bin/fw_upgrade.sh"
+          sd_archive="out/y23/y23_${version}_sd.tgz"
+          test -s "$sd_archive"
+          mkdir -p /tmp/y23-sd-verify
+          tar xzf "$sd_archive" -C /tmp/y23-sd-verify
+          test ! -e /tmp/y23-sd-verify/yi-hack/bin/go2rtc
+          test -x /tmp/y23-sd-verify/yi-hack/bin/nanotts
+          test -s /tmp/y23-sd-verify/yi-hack/usr/share/pico/lang/en-US_ta.bin
+          (cd out/y23 && sha256sum -c "y23_${version}.sha256")
           test -f "$hack_root/etc/system.conf"
           grep -q '^RTSP_AUDIO=no$' "$hack_root/etc/system.conf"
           grep -q 'refresh_process_state' "$hack_root/script/wd.sh"
@@ -191,6 +219,7 @@ jobs:
           # pack_fw.sh requires and strips this file before creating sys_y23,
           # so its presence after re-extraction is a useful rootfs integrity check.
           test -f /tmp/y23-rootfs/ext/bin/iwconfig
+          test -L /tmp/y23-rootfs/usr/bin/wc
 
           echo "Built firmware: $archive"
           ls -lh "$archive"
@@ -199,6 +228,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: yi-hack-MStarX-y23-firmware
-          path: out/y23/y23_*.tgz
+          path: |
+            out/y23/y23_*.tgz
+            out/y23/y23_*.sha256
           if-no-files-found: error
           compression-level: 0

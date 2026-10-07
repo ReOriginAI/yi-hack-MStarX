@@ -4,6 +4,7 @@ CONF_FILE="etc/system.conf"
 
 YI_PREFIX="/home/app"
 YI_HACK_PREFIX="/home/yi-hack"
+. "$YI_HACK_PREFIX/script/runtime.sh"
 START_STOP_SCRIPT=$YI_HACK_PREFIX/script/service.sh
 
 YI_HACK_VER=$(cat /home/yi-hack/version)
@@ -12,7 +13,7 @@ MODEL_SUFFIX=$(cat /home/yi-hack/model_suffix)
 get_config()
 {
     key=$1
-    grep -w $1 $YI_HACK_PREFIX/$CONF_FILE | cut -d "=" -f2-
+    config_get "$1"
 }
 
 set_camera_time()
@@ -67,21 +68,17 @@ start_buffer()
 
 log()
 {
-    if [ "$DEBUG_LOG" == "yes" ]; then
-        echo $1 >> /tmp/sd/hack_debug.log
-
-        if [ "$2" == "1" ]; then
-            echo "" >> /tmp/sd/hack_debug.log
-            ps >> /tmp/sd/hack_debug.log
-            echo "" >> /tmp/sd/hack_debug.log
-            free >> /tmp/sd/hack_debug.log
-            echo "" >> /tmp/sd/hack_debug.log
-        fi
+    [ "$DEBUG_LOG" = yes ] || return 0
+    "$YI_HACK_PREFIX/script/bounded_log.sh" /tmp/hack_debug.log "$1"
+    if [ "$2" = 1 ]; then
+        "$YI_HACK_PREFIX/script/bounded_log.sh" /tmp/hack_debug.log "$(ps)"
+        "$YI_HACK_PREFIX/script/bounded_log.sh" /tmp/hack_debug.log "$(free)"
     fi
 }
 
 DEBUG_LOG=$(get_config DEBUG_LOG)
-rm -f /tmp/sd/hack_debug.log
+rm -f /tmp/hack_debug.log
+"$YI_HACK_PREFIX/script/log_store.sh"
 
 log "Starting system.sh"
 
@@ -114,30 +111,13 @@ fi
 
 touch /tmp/httpd.conf
 
-# Restore configuration after a firmware upgrade
-if [ -f $YI_HACK_PREFIX/.fw_upgrade_in_progress ]; then
-    for f in `ls /tmp/sd/.fw_upgrade/*.conf`; do
-        fb="${f##*/}"
-        if [ "$fb" == "proxychains.conf" ]; then
-            cat /tmp/sd/.fw_upgrade/$fb > $YI_HACK_PREFIX/etc/$fb
-        else
-            cp -f /tmp/sd/.fw_upgrade/$fb $YI_HACK_PREFIX/etc/
-        fi
-    done
-    chmod 0644 $YI_HACK_PREFIX/etc/*.conf
-    if [ -f /tmp/sd/.fw_upgrade/hostname ]; then
-        cp -f /tmp/sd/.fw_upgrade/hostname $YI_HACK_PREFIX/etc/
-        chmod 0644 $YI_HACK_PREFIX/etc/hostname
+# Restore configuration after a firmware upgrade, without unbounded flash copies.
+if [ -f "$YI_HACK_PREFIX/.fw_upgrade_in_progress" ]; then
+    if sd_available && [ -d /tmp/sd/.fw_upgrade ]; then
+        "$YI_HACK_PREFIX/script/restore_upgrade.sh" || log "Configuration recovery failed; SD backup retained"
+    else
+        rm -f "$YI_HACK_PREFIX/.fw_upgrade_in_progress"
     fi
-    if [ -f /tmp/sd/.fw_upgrade/TZ ]; then
-        cp -f /tmp/sd/.fw_upgrade/TZ $YI_HACK_PREFIX/etc/
-        chmod 0644 $YI_HACK_PREFIX/etc/TZ
-    fi
-    if [ -f /tmp/sd/.fw_upgrade/passwd ]; then
-        cp -f /tmp/sd/.fw_upgrade/passwd $YI_HACK_PREFIX/etc/
-        chmod 0644 $YI_HACK_PREFIX/etc/passwd
-    fi
-    rm $YI_HACK_PREFIX/.fw_upgrade_in_progress
 fi
 
 $YI_HACK_PREFIX/script/check_conf.sh
@@ -220,11 +200,11 @@ if [[ $(get_config DISABLE_CLOUD) == "no" ]] ; then
         fi
         start_rmm
         sleep 4
-        dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
+        [ ! -p /tmp/audio_fifo ] || dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
         if [[ $(get_config TIME_OSD) == "yes" ]] ; then
-            (sleep 30; export TZP=`TZ=$TZ_TMP date +%z`; export TZP=${TZP:0:3}:${TZP:3:2}; export TZ=GMT$TZP; ./mp4record) &
+            (sleep 30; "$START_STOP_SCRIPT" mp4record ensure) &
         else
-            ./mp4record &
+            "$START_STOP_SCRIPT" mp4record ensure
         fi
         ./cloud &
         ./p2p_tnp &
@@ -269,14 +249,14 @@ else
         fi
         start_rmm
         sleep 4
-        dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
+        [ ! -p /tmp/audio_fifo ] || dd if=/tmp/audio_fifo of=/dev/null bs=1 count=8192
         # Signal time readiness and start circular-buffer filling
         start_buffer
         if [[ $(get_config REC_WITHOUT_CLOUD) == "yes" ]] ; then
             if [[ $(get_config TIME_OSD) == "yes" ]] ; then
-                (sleep 30; export TZP=`TZ=$TZ_TMP date +%z`; export TZP=${TZP:0:3}:${TZP:3:2}; export TZ=GMT$TZP; ./mp4record) &
+                (sleep 30; "$START_STOP_SCRIPT" mp4record ensure) &
             else
-                ./mp4record &
+                "$START_STOP_SCRIPT" mp4record ensure
             fi
         fi
     )
@@ -455,3 +435,7 @@ if [ -f "/tmp/sd/yi-hack/startup.sh" ]; then
 fi
 
 log "system.sh completed" 1
+
+# Recovery covers local services even when RTSP is disabled.
+"$YI_HACK_PREFIX/script/oom_policy.sh"
+"$YI_HACK_PREFIX/script/wd.sh" >/dev/null 2>&1 &

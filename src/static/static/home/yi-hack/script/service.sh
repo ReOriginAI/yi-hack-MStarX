@@ -1,240 +1,172 @@
 #!/bin/sh
-
-CONF_FILE="etc/system.conf"
-
-YI_HACK_PREFIX="/home/yi-hack"
-
-YI_HACK_VER=$(cat /home/yi-hack/version)
-MODEL_SUFFIX=$(cat /home/yi-hack/model_suffix)
-if [[ $MODEL_SUFFIX == "y23" ]]; then
-    SERIAL_NUMBER=$(dd status=none bs=1 count=20 skip=592 if=/tmp/mmap.info | tr '\0' '0' | cut -c1-20)
-else
-    SERIAL_NUMBER=$(dd status=none bs=1 count=20 skip=661 if=/tmp/mmap.info | tr '\0' '0' | cut -c1-20)
-fi
-HW_ID=$(dd status=none bs=1 count=4 skip=661 if=/tmp/mmap.info | tr '\0' '0' | cut -c1-4)
-
-get_config()
-{
-    key=$1
-    grep -w $1 $YI_HACK_PREFIX/$CONF_FILE | cut -d "=" -f2-
-}
+YI_HACK_PREFIX=${YI_HACK_PREFIX:-/home/yi-hack}
+. "$YI_HACK_PREFIX/script/runtime.sh"
+CONF_FILE=etc/system.conf
+SERVICE_STATE=/tmp/yi-service-state
+SERVICE_LOCK=/tmp/yi-service.lock.d
+get_config() { config_get "$1"; }
 
 init_config()
 {
-    if [ -f $YI_HACK_PREFIX/etc/TZ ]; then
-        TZ_TMP=`cat $YI_HACK_PREFIX/etc/TZ`
-    fi
-
-    if [[ x$(get_config USERNAME) != "x" ]] ; then
-        USERNAME=$(get_config USERNAME)
-        PASSWORD=$(get_config PASSWORD)
+    MODEL_SUFFIX=$(cat "$YI_HACK_PREFIX/model_suffix")
+    [ "$MODEL_SUFFIX" = y23 ] || return 1
+    YI_HACK_VER=$(cat "$YI_HACK_PREFIX/version")
+    SERIAL_NUMBER=$(dd bs=1 count=20 skip=592 if=/tmp/mmap.info 2>/dev/null | tr '\0' '0')
+    HW_ID=$(dd bs=1 count=4 skip=661 if=/tmp/mmap.info 2>/dev/null | tr '\0' '0')
+    USERNAME=$(get_config USERNAME)
+    PASSWORD=$(get_config PASSWORD)
+    TZ_TMP=$(cat "$YI_HACK_PREFIX/etc/TZ" 2>/dev/null)
+    RTSP_PORT=$(get_config RTSP_PORT)
+    valid_port "$RTSP_PORT" || RTSP_PORT=554
+    HTTPD_PORT=$(get_config HTTPD_PORT)
+    valid_port "$HTTPD_PORT" || HTTPD_PORT=80
+    D_RTSP_PORT= D_HTTPD_PORT= RTSP_USERPWD= ONVIF_USERPWD=
+    [ "$RTSP_PORT" = 554 ] || D_RTSP_PORT=:$RTSP_PORT
+    [ "$HTTPD_PORT" = 80 ] || D_HTTPD_PORT=:$HTTPD_PORT
+    if [ -n "$USERNAME" ]; then
         ONVIF_USERPWD="user=$USERNAME\npassword=$PASSWORD"
-        RTSP_USERPWD=$USERNAME:$PASSWORD@
+        URI_USER=$(printf '%s' "$USERNAME" | hexdump -v -e '1/1 "%%%02X"')
+        URI_PASSWORD=$(printf '%s' "$PASSWORD" | hexdump -v -e '1/1 "%%%02X"')
+        RTSP_USERPWD="$URI_USER:$URI_PASSWORD@"
     fi
-
-    case $(get_config RTSP_PORT) in
-        ''|*[!0-9]*) RTSP_PORT=554 ;;
-        *) RTSP_PORT=$(get_config RTSP_PORT) ;;
+    RTSP_ALT=$(get_config RTSP_ALT)
+    GO2RTC_BIN="$YI_HACK_PREFIX/bin/go2rtc"
+    [ -x "$GO2RTC_BIN" ] || GO2RTC_BIN=/tmp/sd/yi-hack/bin/go2rtc
+    case "$RTSP_ALT" in
+        go2rtc) if [ -x "$GO2RTC_BIN" ]; then RTSP_DAEMON=go2rtc; else RTSP_ALT=standard; RTSP_DAEMON=rRTSPServer; fi ;;
+        alternative) RTSP_DAEMON=rtsp_server_yi ;;
+        *) RTSP_ALT=standard; RTSP_DAEMON=rRTSPServer ;;
     esac
-    case $(get_config HTTPD_PORT) in
-        ''|*[!0-9]*) HTTPD_PORT=80 ;;
-        *) HTTPD_PORT=$(get_config HTTPD_PORT) ;;
-    esac
-
-    if [[ $RTSP_PORT != "554" ]] ; then
-        D_RTSP_PORT=:$RTSP_PORT
-    fi
-
-    if [[ $HTTPD_PORT != "80" ]] ; then
-        D_HTTPD_PORT=:$HTTPD_PORT
-    fi
-
-    if [[ $(get_config RTSP) == "yes" ]] ; then
-        if [[ $(get_config RTSP_ALT) == "alternative" ]] ; then
-            RTSP_DAEMON="rtsp_server_yi"
-        elif [[ $(get_config RTSP_ALT) == "go2rtc" ]] ; then
-            RTSP_DAEMON="go2rtc"
-            if [ ! -f /tmp/sd/yi-hack/bin/go2rtc ]; then
-                RTSP_DAEMON="rRTSPServer"
-            fi
-        else
-            RTSP_DAEMON="rRTSPServer"
-        fi
-
-        RTSP_AUDIO=$(get_config RTSP_AUDIO)
-        NR_LEVEL=$(get_config RTSP_AUDIO_NR_LEVEL)
-        if [ "$RTSP_AUDIO" == "aac" ]; then
-            if [[ $(get_config RTSP_ALT) == "alternative" ]] ; then
-                # alternative is not able to convert PCM to AAC
-                RTSP_AUDIO="alaw"
-                ONVIF_AUDIO_ENCODER="audio_encoder=alaw"
-                NR_LEVEL=""
-            else
-                ONVIF_AUDIO_ENCODER="audio_encoder=aac"
-            fi
-            HG2_AUDIO="-a"
-        elif [ "$RTSP_AUDIO" == "pcm" ]; then
-            ONVIF_AUDIO_ENCODER="audio_encoder=none"
-        elif [ "$RTSP_AUDIO" == "none" ] || [ "$RTSP_AUDIO" == "no" ] ; then
-            RTSP_AUDIO="no"
-            ONVIF_AUDIO_ENCODER="audio_encoder=none"
-        else
-            ONVIF_AUDIO_ENCODER="audio_encoder=$RTSP_AUDIO"
-        fi
-        if [ ! -z $RTSP_AUDIO ]; then
-            RTSP_AUDIO_OPTION="-a "$RTSP_AUDIO
-        fi
-        if [ ! -z $RTSP_PORT ]; then
-            P_RTSP_PORT="-p "$RTSP_PORT
-        fi
-        if [ ! -z $USERNAME ]; then
-            RTSP_USER="-u "$USERNAME
-        fi
-        if [ ! -z $PASSWORD ]; then
-            RTSP_PASSWORD="-w "$PASSWORD
-        fi
-        if [ ! -z $NR_LEVEL ]; then
-            NR_LEVEL="-n "$NR_LEVEL
-        fi
-
-        RTSP_RES=$(get_config RTSP_STREAM)
-        RTSP_ALT=$(get_config RTSP_ALT)
-    fi
-
-    ONVIF_AUDIO_BC=$(get_config ONVIF_AUDIO_BC)
-    if [ ! -z $ONVIF_AUDIO_BC ]; then
-        ONVIF_AUDIO_DECODER="audio_decoder=$ONVIF_AUDIO_BC"
-        if [ "$ONVIF_AUDIO_BC" != "NONE" ] && [ "$ONVIF_AUDIO_BC" != "none" ]; then
-            if [ "$ONVIF_AUDIO_BC" == "G711" ]; then
-                RTSP_AUDIO_BC="-b ulaw"
-            else
-                RTSP_AUDIO_BC="-b $ONVIF_AUDIO_BC"
-            fi
-        fi
-    else
-        ONVIF_AUDIO_BC="none"
-        ONVIF_AUDIO_DECODER="audio_decoder=$ONVIF_AUDIO_BC"
-    fi
-    if [[ $(get_config ONVIF_ENABLE_MEDIA2) == "yes" ]] ; then
-        ONVIF_ENABLE_MEDIA2=1
-    else
-        ONVIF_ENABLE_MEDIA2=0
-    fi
-    if [[ $(get_config ONVIF_FAULT_IF_UNKNOWN) == "yes" ]] ; then
-        ONVIF_FAULT_IF_UNKNOWN=1
-    else
-        ONVIF_FAULT_IF_UNKNOWN=0
-    fi
-    if [[ $(get_config ONVIF_FAULT_IF_SET) == "yes" ]] ; then
-        ONVIF_FAULT_IF_SET=1
-    else
-        ONVIF_FAULT_IF_SET=0
-    fi
-    if [[ $(get_config ONVIF_SYNOLOGY_NVR) == "yes" ]] ; then
-        ONVIF_SYNOLOGY_NVR=1
-    else
-        ONVIF_SYNOLOGY_NVR=0
-    fi
+    RTSP_RES=$(get_config RTSP_STREAM)
+    case "$RTSP_RES" in high|low|both) ;; *) RTSP_RES=high ;; esac
+    RTSP_AUDIO=$(get_config RTSP_AUDIO)
+    case "$RTSP_AUDIO" in aac|pcm|alaw|ulaw|yes) ;; *) RTSP_AUDIO=no ;; esac
+    [ "$RTSP_ALT:$RTSP_AUDIO" != alternative:aac ] || RTSP_AUDIO=alaw
+    # MStar go2rtc consumes vendor AAC directly; PCM encoding stays with the
+    # standard/alternative servers. Never advertise a codec we cannot produce.
+    [ "$RTSP_ALT" != go2rtc ] || { [ "$RTSP_AUDIO" = no ] || RTSP_AUDIO=aac; }
+    ONVIF_AUDIO_ENCODER="audio_encoder=$RTSP_AUDIO"
+    [ "$RTSP_AUDIO" != no ] || ONVIF_AUDIO_ENCODER=audio_encoder=none
+    BACKCHANNEL=$(get_config RTSP_BACKCHANNEL)
+    [ -n "$BACKCHANNEL" ] || BACKCHANNEL=$(get_config ONVIF_AUDIO_BC)
+    case "$BACKCHANNEL" in G711|g711|ulaw) BACKCHANNEL=G711; BC_CODEC=ulaw ;; AAC|aac) BACKCHANNEL=AAC; BC_CODEC=aac ;; *) BACKCHANNEL=NONE; BC_CODEC= ;; esac
+    [ "$(get_config SPEAKER_AUDIO)" = yes ] || { BACKCHANNEL=NONE; BC_CODEC=; }
+    # AAC reverse audio is supported by the standard server only.
+    if [ "$BACKCHANNEL" = AAC ] && [ "$RTSP_ALT" != standard ]; then BACKCHANNEL=NONE; BC_CODEC=; fi
+    [ "$RTSP_ALT" != alternative ] || { BACKCHANNEL=NONE; BC_CODEC=; }
+    ONVIF_AUDIO_DECODER="audio_decoder=$BACKCHANNEL"
+    for KEY in ONVIF_ENABLE_MEDIA2 ONVIF_FAULT_IF_UNKNOWN ONVIF_FAULT_IF_SET ONVIF_SYNOLOGY_NVR; do
+        if [ "$(get_config "$KEY")" = yes ]; then VALUE=1; else VALUE=0; fi
+        # KEY comes from the literal list above, not from configuration.
+        eval "$KEY=$VALUE"
+    done
 }
 
-start_rtsp()
+stop_process()
 {
-    # If "null" use default
-
-    if [ "$1" == "low" ] || [ "$1" == "high" ] || [ "$1" == "both" ]; then
-        RTSP_RES=$1
-    fi
-    if [ "$2" == "no" ] || [ "$2" == "yes" ] || [ "$2" == "alaw" ] || [ "$2" == "ulaw" ] || [ "$2" == "pcm" ] || [ "$2" == "aac" ] ; then
-        RTSP_AUDIO=$2
-        RTSP_AUDIO_OPTION="-a "$2
-    fi
-
-    if [ "$RTSP_ALT" == "go2rtc" ]; then
-        echo "streams:" > /tmp/go2rtc.yaml
-        if [ "$RTSP_RES" == "high" ] || [ "$RTSP_RES" == "both" ]; then
-            echo "  ch0_0.h264:" >> /tmp/go2rtc.yaml
-            echo "    - exec:h264grabber_h -m $MODEL_SUFFIX -r high#backchannel=0" >> /tmp/go2rtc.yaml
-        fi
-        if [ "$RTSP_RES" == "low" ] || [ "$RTSP_RES" == "both" ]; then
-            echo "  ch0_1.h264:" >> /tmp/go2rtc.yaml
-            echo "    - exec:h264grabber_l -m $MODEL_SUFFIX -r low#backchannel=0" >> /tmp/go2rtc.yaml
-        fi
-
-        echo "" >> /tmp/go2rtc.yaml
-        echo "api:" >> /tmp/go2rtc.yaml
-        echo "  listen: \"\"" >> /tmp/go2rtc.yaml
-        echo "" >> /tmp/go2rtc.yaml
-        echo "webrtc:" >> /tmp/go2rtc.yaml
-        echo "  listen: \"\"" >> /tmp/go2rtc.yaml
-        echo "" >> /tmp/go2rtc.yaml
-        echo "rtsp:" >> /tmp/go2rtc.yaml
-        echo "  listen: \":$RTSP_PORT\"" >> /tmp/go2rtc.yaml
-        if [ ! -z $USERNAME ]; then
-            echo "  username: \"$USERNAME\"" >> /tmp/go2rtc.yaml
-            echo "  password: \"$PASSWORD\"" >> /tmp/go2rtc.yaml
-        fi
-
-        /tmp/sd/yi-hack/bin/go2rtc -c /tmp/go2rtc.yaml -d
-    elif [ "$RTSP_ALT" == "alternative" ]; then
-
-        CODEC_LOW=$(cat /tmp/lowres)
-        if [ ! -z $CODEC_LOW ]; then
-            CODEC_LOW="-c "$CODEC_LOW
-        fi
-        CODEC_HIGH=$(cat /tmp/highres)
-        if [ ! -z $CODEC_HIGH ]; then
-            CODEC_HIGH="-C "$CODEC_HIGH
-        fi
-
-        if [[ $RTSP_RES == "low" ]]; then
-            h264grabber_l -m $MODEL_SUFFIX -r low  -f &
-            sleep 1
-            $RTSP_DAEMON -m $MODEL_SUFFIX -r low $CODEC_LOW $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        elif [[ $RTSP_RES == "high" ]]; then
-            h264grabber_h -m $MODEL_SUFFIX -r high -f &
-            sleep 1
-            $RTSP_DAEMON -m $MODEL_SUFFIX -r high $CODEC_HIGH $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        elif [[ $RTSP_RES == "both" ]]; then
-            h264grabber_l -m $MODEL_SUFFIX -r low -f &
-            h264grabber_h -m $MODEL_SUFFIX -r high -f &
-            sleep 1
-            $RTSP_DAEMON -m $MODEL_SUFFIX -r both $CODEC_LOW $CODEC_HIGH $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        fi
-
-        WD_COUNT=$(ps | grep wd.sh | grep -v grep | grep -c ^)
-        if [ $WD_COUNT -eq 0 ]; then
-            (sleep 30; $YI_HACK_PREFIX/script/wd.sh >/dev/null) &
-        fi
-    else
-
-        CODEC_LOW="h264"
-        CODEC_HIGH="h264"
-        if [[ $MODEL_SUFFIX == H305R ]]; then
-            CODEC_HIGH="h265"
-        fi
-        if [[ $RTSP_RES == "low" ]]; then
-            h264grabber_l -m $MODEL_SUFFIX -r low -f &
-            $RTSP_DAEMON -r low -i -c $CODEC_LOW $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        elif [[ $RTSP_RES == "high" ]]; then
-            h264grabber_h -m $MODEL_SUFFIX -r high -f &
-            $RTSP_DAEMON -r high -i -C $CODEC_HIGH $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        elif [[ $RTSP_RES == "both" ]]; then
-            h264grabber_l -m $MODEL_SUFFIX -r low -f &
-            h264grabber_h -m $MODEL_SUFFIX -r high -f &
-            $RTSP_DAEMON -r both -i -c $CODEC_LOW -C $CODEC_HIGH $RTSP_AUDIO_OPTION $P_RTSP_PORT $RTSP_USER $RTSP_PASSWORD $RTSP_AUDIO_BC $NR_LEVEL > /dev/null &
-        fi
-
-        WD_COUNT=$(ps | grep wd.sh | grep -v grep | grep -c ^)
-        if [ $WD_COUNT -eq 0 ]; then
-            (sleep 30; $YI_HACK_PREFIX/script/wd.sh >/dev/null) &
-        fi
-    fi
+    local name="$1" n=0
+    killall -q "$name" 2>/dev/null || :
+    while [ "$(process_count "$name")" -gt 0 ] && [ "$n" -lt 3 ]; do
+        sleep 1; n=$((n+1))
+    done
+    [ "$(process_count "$name")" -eq 0 ] || killall -q -KILL "$name" 2>/dev/null
+    return 0
 }
 
 stop_rtsp()
 {
-    killall wd.sh
-    killall $RTSP_DAEMON
+    for daemon in go2rtc rRTSPServer rtsp_server_yi h264grabber h264grabber_h h264grabber_l h264grabber2; do
+        stop_process "$daemon"
+    done
+    rm -f /tmp/go2rtc.yaml /tmp/h264_high_fifo /tmp/h264_low_fifo
+}
+
+rtsp_healthy()
+{
+    [ "$(process_count "$RTSP_DAEMON")" -eq 1 ] || return 1
+    local hex=$(printf '%04X' "$RTSP_PORT")
+    set -- /proc/net/tcp
+    [ ! -r /proc/net/tcp6 ] || set -- "$@" /proc/net/tcp6
+    awk -v p=":$hex" '$2 ~ (p "$" ) && $4=="0A" {found=1} END {exit !found}' "$@" 2>/dev/null || return 1
+    [ "$RTSP_ALT" != go2rtc ] || return 0
+    case "$RTSP_RES" in high|both) [ "$(process_count h264grabber_h)" -eq 1 ] || return 1 ;; esac
+    case "$RTSP_RES" in low|both) [ "$(process_count h264grabber_l)" -eq 1 ] || return 1 ;; esac
+}
+
+yaml_quote()
+{
+    # Single-quoted YAML treats backslashes literally and doubles apostrophes.
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/''/g")"
+}
+
+start_rtsp()
+{
+    rtsp_healthy && return 0
+    stop_rtsp
+    if [ "$RTSP_ALT" = go2rtc ]; then
+        umask 077
+        {
+            printf 'streams:\n'
+            for RES in high low; do
+                case "$RTSP_RES:$RES" in high:low|low:high) continue ;; esac
+                if [ "$RES" = high ]; then CH=0; SUFFIX=h; else CH=1; SUFFIX=l; fi
+                printf '  ch0_%s.h264:\n    - exec:%s/bin/h264grabber_%s -m y23 -r %s#backchannel=0\n' "$CH" "$YI_HACK_PREFIX" "$SUFFIX" "$RES"
+                if [ "$RTSP_AUDIO" != no ]; then
+                    printf '    - exec:%s/bin/h264grabber2 -r none -a#backchannel=0\n' "$YI_HACK_PREFIX"
+                fi
+                if [ "$BACKCHANNEL" = G711 ]; then
+                    printf '    - exec:%s/bin/speaker stream ulaw#backchannel=1#audio=pcmu/8000#killsignal=15#killtimeout=2\n' "$YI_HACK_PREFIX"
+                fi
+            done
+            printf 'rtsp:\n  listen: ":%s"\n' "$RTSP_PORT"
+            if [ -n "$USERNAME" ]; then
+                printf '  username: '; yaml_quote "$USERNAME"; printf '\n  password: '; yaml_quote "$PASSWORD"; printf '\n'
+            fi
+        } > /tmp/go2rtc.yaml || return 1
+        "$GO2RTC_BIN" -c /tmp/go2rtc.yaml >/dev/null 2>&1 &
+    else
+        case "$RTSP_RES" in low|both) h264grabber_l -m y23 -r low -f >/dev/null 2>&1 & ;; esac
+        case "$RTSP_RES" in high|both) h264grabber_h -m y23 -r high -f >/dev/null 2>&1 & ;; esac
+        set -- -r "$RTSP_RES" -a "$RTSP_AUDIO" -p "$RTSP_PORT"
+        [ -z "$USERNAME" ] || set -- "$@" -u "$USERNAME"
+        [ -z "$PASSWORD" ] || set -- "$@" -w "$PASSWORD"
+        [ -z "$BC_CODEC" ] || set -- "$@" -b "$BC_CODEC"
+        NR_LEVEL=$(get_config RTSP_AUDIO_NR_LEVEL)
+        case "$NR_LEVEL" in ''|*[!0-9]*) ;; *) set -- "$@" -n "$NR_LEVEL" ;; esac
+        if [ "$RTSP_ALT" = alternative ]; then
+            CODEC_LOW=$(cat /tmp/lowres 2>/dev/null); CODEC_HIGH=$(cat /tmp/highres 2>/dev/null)
+            [ -z "$CODEC_LOW" ] || set -- "$@" -c "$CODEC_LOW"
+            [ -z "$CODEC_HIGH" ] || set -- "$@" -C "$CODEC_HIGH"
+            set -- "$@" -m y23
+        else
+            # The packaged FIFO-only server has no upstream -i option.
+            set -- "$@" -c h264 -C h264
+        fi
+        "$RTSP_DAEMON" "$@" >/dev/null 2>&1 &
+    fi
+    # Keep concurrent starts from mistaking a newly spawned daemon for stale.
+    local tries=0
+    while [ "$tries" -lt 5 ]; do
+        sleep 1
+        rtsp_healthy && return 0
+        tries=$((tries+1))
+    done
+    return 1
+}
+
+ensure_ipc()
+{
+    [ "$(process_count ipc2file)" -eq 1 ] && return 0
+    stop_process ipc2file
+    ipc2file
+}
+
+release_ipc()
+{
+    # ONVIF and MQTT may share the event consumer. Keep it for either owner.
+    if [ "$(process_count onvif_notify_server)" -eq 0 ] && [ "$(process_count mqttv4)" -eq 0 ]; then
+        stop_process ipc2file
+    fi
 }
 
 start_onvif()
@@ -281,18 +213,18 @@ start_onvif()
     echo "adv_fault_if_set=$ONVIF_FAULT_IF_SET" >> $ONVIF_SRVD_CONF
     echo "adv_synology_nvr=$ONVIF_SYNOLOGY_NVR" >> $ONVIF_SRVD_CONF
     echo "" >> $ONVIF_SRVD_CONF
-    if [ ! -z $ONVIF_USERPWD ]; then
-        echo -e $ONVIF_USERPWD >> $ONVIF_SRVD_CONF
+    if [ -n "$ONVIF_USERPWD" ]; then
+        printf 'user=%s\npassword=%s\n' "$USERNAME" "$PASSWORD" >> $ONVIF_SRVD_CONF
         echo "" >> $ONVIF_SRVD_CONF
     fi
-    if [ ! -z $ONVIF_PROFILE_0 ]; then
+    if [ -n "$ONVIF_PROFILE_0" ]; then
         echo "#Profile 0" >> $ONVIF_SRVD_CONF
-        echo -e $ONVIF_PROFILE_0 >> $ONVIF_SRVD_CONF
+        printf '%b\n' "$ONVIF_PROFILE_0" >> $ONVIF_SRVD_CONF
         echo "" >> $ONVIF_SRVD_CONF
     fi
-    if [ ! -z $ONVIF_PROFILE_1 ]; then
+    if [ -n "$ONVIF_PROFILE_1" ]; then
         echo "#Profile 1" >> $ONVIF_SRVD_CONF
-        echo -e $ONVIF_PROFILE_1 >> $ONVIF_SRVD_CONF
+        printf '%b\n' "$ONVIF_PROFILE_1" >> $ONVIF_SRVD_CONF
         echo "" >> $ONVIF_SRVD_CONF
     fi
 
@@ -359,179 +291,129 @@ start_onvif()
     echo "input_file=/tmp/onvif_notify_server/sound_detection" >> $ONVIF_SRVD_CONF
 
     chmod 0600 $ONVIF_SRVD_CONF
-    ipc2file
+    ensure_ipc
     mkdir -p /tmp/onvif_notify_server
     onvif_notify_server --conf_file $ONVIF_SRVD_CONF
 }
 
-stop_onvif()
+
+service_enabled()
 {
-    killall onvif_notify_server
-    killall ipc2file
-    killall onvif_simple_server
+    case "$1" in
+        rtsp) KEY=RTSP ;;
+        onvif) KEY=ONVIF ;;
+        wsdd) [ "$(get_config ONVIF)" = yes ] || return 1; KEY=ONVIF_WSDD ;;
+        ftpd) KEY=FTPD ;;
+        mqtt|mqtt-config) KEY=MQTT ;;
+        mp4record) [ "$(get_config DISABLE_CLOUD)" = no ] || [ "$(get_config REC_WITHOUT_CLOUD)" = yes ]; return ;;
+        httpd) KEY=HTTPD ;; sshd) KEY=SSHD ;; telnetd) KEY=TELNETD ;; ntpd) KEY=NTPD ;; mdnsd) KEY=MDNSD ;;
+        *) return 1 ;;
+    esac
+    [ "$(get_config "$KEY")" = yes ]
 }
 
-start_wsdd()
+service_wanted()
 {
-    wsd_simple_server --pid_file /var/run/wsd_simple_server.pid --if_name wlan0 --xaddr "http://%s$D_HTTPD_PORT/onvif/device_service" -m `hostname` -n Yi
+    service_enabled "$1" || return 1
+    [ ! -f "$SERVICE_STATE/$1.stopped" ] || return 1
+    case "$1" in
+        rtsp|mp4record) [ ! -f /tmp/privacy ] && [ "$(config_get SWITCH_ON camera.conf)" != no ] || return 1 ;;
+    esac
 }
 
-stop_wsdd()
+service_daemon()
 {
-    killall wsd_simple_server
+    case "$1" in
+        rtsp) printf '%s\n' "$RTSP_DAEMON" ;;
+        onvif) echo onvif_notify_server ;; wsdd) echo wsd_simple_server ;;
+        ftpd) if [ "$(get_config BUSYBOX_FTPD)" = yes ]; then echo tcpsvd; else echo pure-ftpd; fi ;;
+        mqtt) echo mqttv4 ;; mqtt-config) echo mqtt-config ;; mp4record) echo mp4record ;;
+        sshd) echo dropbear ;; telnetd) echo telnetd ;; httpd) echo httpd ;; ntpd) echo ntpd ;; mdnsd) echo mdnsd ;;
+        *) return 1 ;;
+    esac
 }
 
-start_ftpd()
+service_stop()
 {
-    if [[ "$1" == "null" ]] ; then
-        if [[ $(get_config BUSYBOX_FTPD) == "yes" ]] ; then
-            FTPD_DAEMON="busybox"
-        else
-            FTPD_DAEMON="pure-ftpd"
-        fi
-    else
-        FTPD_DAEMON=$1
-    fi
-
-    if [[ $FTPD_DAEMON == "busybox" ]] ; then
-        tcpsvd -vE 0.0.0.0 21 ftpd -w >/dev/null &
-    elif [[ $FTPD_DAEMON == "pure-ftpd" ]] ; then
-        pure-ftpd -B
-    fi
+    case "$1" in
+        rtsp) stop_rtsp ;;
+        onvif) stop_process onvif_notify_server; stop_process onvif_simple_server; release_ipc ;;
+        ftpd) stop_process tcpsvd; stop_process pure-ftpd ;;
+        mqtt) stop_process mqttv4; release_ipc ;;
+        *) stop_process "$(service_daemon "$1")" ;;
+    esac
 }
 
-stop_ftpd()
+service_start()
 {
-    if [[ "$1" == "null" ]] ; then
-        if [[ $(get_config BUSYBOX_FTPD) == "yes" ]] ; then
-            FTPD_DAEMON="busybox"
-        else
-            FTPD_DAEMON="pure-ftpd"
-        fi
-    else
-        FTPD_DAEMON=$1
-    fi
-
-    if [[ $FTPD_DAEMON == "busybox" ]] ; then
-        killall tcpsvd
-    elif [[ $FTPD_DAEMON == "pure-ftpd" ]] ; then
-        killall pure-ftpd
-    fi
+    service_wanted "$1" || { service_stop "$1"; return 0; }
+    [ "$1" != rtsp ] || { start_rtsp; return; }
+    DAEMON=$(service_daemon "$1")
+    COUNT=$(process_count "$DAEMON")
+    # dropbear children are sessions: never collapse them as duplicate listeners.
+    [ "$COUNT" -ne 1 ] || { [ "$1" != onvif ] || ensure_ipc; return 0; }
+    [ "$1" != sshd ] || { [ "$COUNT" -eq 0 ] || return 0; }
+    service_stop "$1"
+    case "$1" in
+        onvif) "$YI_HACK_PREFIX/script/log_store.sh" || return 1; start_onvif null null ;;
+        wsdd) "$YI_HACK_PREFIX/script/log_store.sh" || return 1; wsd_simple_server --pid_file /var/run/wsd_simple_server.pid --if_name wlan0 --xaddr "http://%s$D_HTTPD_PORT/onvif/device_service" -m "$(hostname)" -n Yi ;;
+        ftpd) if [ "$DAEMON" = tcpsvd ]; then tcpsvd -E 0.0.0.0 21 ftpd -w >/dev/null 2>&1 & else pure-ftpd -B; fi ;;
+        mqtt) mqttv4 >/dev/null 2>&1 & ;;
+        mqtt-config) mqtt-config >/dev/null 2>&1 & ;;
+        mp4record) (
+            cd /home/app || exit 1
+            if [ "$(get_config TIME_OSD)" = yes ]; then
+                TZP=$(TZ="$TZ_TMP" date +%z); TZP=${TZP:0:3}:${TZP:3:2}
+                export TZ="GMT$TZP"
+            fi
+            exec ./mp4record >/dev/null 2>&1
+        ) & ;;
+        httpd) httpd -p "$HTTPD_PORT" -h "$YI_HACK_PREFIX/www/" -c /tmp/httpd.conf ;;
+        sshd) dropbear -R ;; telnetd) telnetd ;;
+        ntpd) ntpd -p "$(get_config NTP_SERVER)" ;;
+        mdnsd) "$YI_HACK_PREFIX/sbin/mdnsd" /tmp/mdns.d ;;
+    esac
 }
 
-ps_program()
-{
-    PS_PROGRAM=$(ps | grep $1 | grep -v grep | grep -c ^)
-    if [ $PS_PROGRAM -gt 0 ]; then
-        echo "started"
-    else
-        echo "stopped"
-    fi
-}
-
-NAME="null"
-ACTION="null"
-PARAM1="null"
-PARAM2="null"
-RES=""
-
-if [ $# -lt 2 ]; then
-    exit
+NAME=${1:-} ACTION=${2:-}
+ALL_SERVICES='rtsp onvif wsdd ftpd mqtt mqtt-config mp4record httpd sshd telnetd ntpd mdnsd'
+case "$NAME" in all|privacy) ;; *) service_daemon "$NAME" >/dev/null || exit 2 ;; esac
+case "$ACTION" in start|stop|restart|ensure|recover|status|on|off) ;; *) exit 2 ;; esac
+if [ "$ACTION" = status ] && [ "$NAME" = privacy ]; then
+    if [ -f /tmp/privacy ]; then echo on; else echo off; fi
+    exit 0
 fi
-
-NAME=$1
-ACTION=$2
-if [ $# -eq 3 ]; then
-    PARAM1=$3
+init_config || exit 1
+if [ "$NAME" = rtsp ]; then
+    case "${3:-}" in high|low|both) RTSP_RES=$3 ;; esac
+    case "${4:-}" in no|yes|aac|pcm|alaw|ulaw) RTSP_AUDIO=$4 ;; esac
 fi
-if [ $# -eq 4 ]; then
-    PARAM2=$4
+if [ "$ACTION" = status ]; then
+    [ "$NAME" != all ] || NAME=rtsp
+    if [ "$(process_count "$(service_daemon "$NAME")")" -gt 0 ]; then echo started; else echo stopped; fi
+    exit 0
 fi
-
-init_config
-
-if [ "$ACTION" == "start" ] ; then
-    if [ "$NAME" == "rtsp" ]; then
-        start_rtsp $PARAM1 $PARAM2
-    elif [ "$NAME" == "onvif" ]; then
-        start_onvif $PARAM1 $PARAM2
-    elif [ "$NAME" == "wsdd" ]; then
-        start_wsdd
-    elif [ "$NAME" == "ftpd" ]; then
-        start_ftpd $PARAM1
-    elif [ "$NAME" == "mqtt" ]; then
-        mqttv4 > /dev/null &
-    elif [ "$NAME" == "mqtt-config" ]; then
-        mqtt-config > /dev/null &
-    elif [ "$NAME" == "mp4record" ]; then
-        cd /home/app
-        if [[ $(get_config TIME_OSD) == "yes" ]] ; then
-            TZP=`TZ=$TZ_TMP date +%z`
-            TZP=${TZP:0:3}:${TZP:3:2}
-            TZ=GMT$TZP ./mp4record > /dev/null &
-        else
-            ./mp4record > /dev/null &
-        fi
-    elif [ "$NAME" == "all" ]; then
-        start_rtsp
-        start_onvif
-        start_wsdd
-        start_ftpd
-        mqttv4 > /dev/null &
-        mqtt-config > /dev/null &
-        cd /home/app
-        if [[ $(get_config TIME_OSD) == "yes" ]] ; then
-            TZP=`TZ=$TZ_TMP date +%z`
-            TZP=${TZP:0:3}:${TZP:3:2}
-            TZ=GMT$TZP ./mp4record > /dev/null &
-        else
-            ./mp4record > /dev/null &
-        fi
-    fi
-elif [ "$ACTION" == "stop" ] ; then
-    if [ "$NAME" == "rtsp" ]; then
-        stop_rtsp
-    elif [ "$NAME" == "onvif" ]; then
-        stop_onvif
-    elif [ "$NAME" == "wsdd" ]; then
-        stop_wsdd
-    elif [ "$NAME" == "ftpd" ]; then
-        stop_ftpd $PARAM1
-    elif [ "$NAME" == "mqtt-config" ]; then
-        killall mqtt-config
-    elif [ "$NAME" == "mqtt" ]; then
-        killall mqttv4
-    elif [ "$NAME" == "mp4record" ]; then
-        killall mp4record
-    elif [ "$NAME" == "all" ]; then
-        stop_rtsp
-        stop_onvif
-        stop_wsdd
-        stop_ftpd
-        killall mqtt-config
-        killall mqttv4
-        killall mp4record
-    fi
-elif [ "$ACTION" == "status" ] ; then
-    if [ "$NAME" == "rtsp" ]; then
-        RES=$(ps_program rRTSPServer)
-    elif [ "$NAME" == "onvif" ]; then
-        RES=$(ps_program onvif_notify_server)
-    elif [ "$NAME" == "wsdd" ]; then
-        RES=$(ps_program wsd_simple_server)
-    elif [ "$NAME" == "ftpd" ]; then
-        RES=$(ps_program ftpd)
-    elif [ "$NAME" == "mqtt" ]; then
-        RES=$(ps_program mqttv4)
-    elif [ "$NAME" == "mqtt-config" ]; then
-        RES=$(ps_program mqtt-config)
-    elif [ "$NAME" == "mp4record" ]; then
-        RES=$(ps_program mp4record)
-    elif [ "$NAME" == "all" ]; then
-        RES=$(ps_program rRTSPServer)
-    fi
+lock_acquire "$SERVICE_LOCK" 20 || exit 1
+trap 'lock_release "$SERVICE_LOCK"' 0
+trap 'exit 1' 1 2 15
+mkdir -p "$SERVICE_STATE" || exit 1
+if [ "$NAME" = privacy ]; then
+    case "$ACTION" in
+        on) touch /tmp/privacy /tmp/snapshot.disabled; service_stop rtsp; service_stop mp4record; echo on ;;
+        off) rm -f /tmp/privacy; [ "$(get_config SNAPSHOT)" != yes ] || rm -f /tmp/snapshot.disabled; service_start rtsp; service_start mp4record; echo off ;;
+        *) exit 2 ;;
+    esac
+    exit 0
 fi
-
-if [ ! -z $RES ]; then
-    echo $RES
-fi
+[ "$NAME" != all ] || NAME="$ALL_SERVICES"
+RESULT=0
+for SERVICE in $NAME; do
+    case "$ACTION" in
+        stop) touch "$SERVICE_STATE/$SERVICE.stopped"; service_stop "$SERVICE" ;;
+        start) rm -f "$SERVICE_STATE/$SERVICE.stopped"; service_start "$SERVICE" || RESULT=1 ;;
+        restart) rm -f "$SERVICE_STATE/$SERVICE.stopped"; service_stop "$SERVICE"; service_start "$SERVICE" || RESULT=1 ;;
+        recover) if service_wanted "$SERVICE"; then service_stop "$SERVICE"; service_start "$SERVICE" || RESULT=1; fi ;;
+        ensure) service_start "$SERVICE" || RESULT=1 ;;
+    esac
+done
+exit "$RESULT"

@@ -27,7 +27,7 @@
 class ADTS2PCMFileSink: public FileSink {
 public:
     static ADTS2PCMFileSink* createNew(UsageEnvironment& env, char const* fileName,
-			     int sampleRate, int numChannels, unsigned bufferSize = 1024);
+			     int sampleRate, int numChannels, unsigned bufferSize = 1024, Boolean forSDP = False);
     // "bufferSize" should be at least as large as the largest expected
     //   input frame.
 
@@ -63,6 +63,7 @@ protected:
     unsigned fSampleRateIndex;
     unsigned fChannelConfiguration;
     Boolean fOutputClosed;
+    int fSpeakerLockFd;
 
     // Best-effort non-blocking write to the output fifo (drops on full pipe).
     void writeNonBlocking(void const* buf, unsigned nbytes);

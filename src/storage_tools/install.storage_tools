@@ -1,0 +1,5 @@
+#!/bin/bash
+set -eu
+cd "$(dirname "$0")"
+mkdir -p ../../build/home/yi-hack/bin
+cp _install/bin/* ../../build/home/yi-hack/bin/

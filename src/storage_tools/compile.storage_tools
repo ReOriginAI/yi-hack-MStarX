@@ -1,0 +1,7 @@
+#!/bin/bash
+set -eu
+cd "$(dirname "$0")"
+mkdir -p _install/bin
+arm-linux-gnueabihf-gcc -std=gnu99 -Os -Wall -Wextra -Werror archive_check.c -o _install/bin/archive_check
+arm-linux-gnueabihf-gcc -std=gnu99 -Os -Wall -Wextra -Werror speaker.c -o _install/bin/speaker -lm
+arm-linux-gnueabihf-strip _install/bin/*
